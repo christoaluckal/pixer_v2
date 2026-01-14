@@ -10,6 +10,7 @@ __pycache__
 
 tmp
 build
+data
 debug.txt
 groundtruth.txt
 kitti
