@@ -91,6 +91,9 @@ class Dataset(object):
 
     def getImage(self, frame_id):
         return None
+    
+    def getImageAndMask(self, frame_id):
+        return None, None
 
     def getImageRight(self, frame_id):
         return None
@@ -127,6 +130,34 @@ class Dataset(object):
                     f"Cannot open dataset: {self.name}, path: {self.path}, frame id: {frame_id}"
                 )
             return np.ascontiguousarray(img) if img is not None else None
+        
+    def getImageColorAndMask(self, frame_id):
+        frame_id += self.start_frame_id
+        if self.num_frames is not None and frame_id >= self.num_frames:
+            if self.is_ok:
+                Printer.yellow(f"Dataset end: {self.name}, path: {self.path}, frame id: {frame_id}")
+                self.is_ok = False
+            return None
+        try:
+            img, mask = self.getImageAndMask(frame_id)
+            if img is None:
+                return None, None
+            if img.ndim == 2:
+                return np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_GRAY2RGB))
+            else:
+                return np.ascontiguousarray(img), mask
+        except:
+            img = None
+            mask = None
+            self.is_ok = False
+            if self.num_frames is not None and frame_id >= self.num_frames:
+                Printer.yellow(f"Dataset end: {self.name}, path: {self.path}, frame id: {frame_id}")
+            else:
+                Printer.red(
+                    f"Cannot open dataset: {self.name}, path: {self.path}, frame id: {frame_id}"
+                )
+            return np.ascontiguousarray(img), mask if img is not None else (None, None)
+
 
     # Adjust frame id with start frame id only here
     def getImageColorRight(self, frame_id):
@@ -251,6 +282,44 @@ class VideoDataset(Dataset):
             self._next_timestamp = self._timestamp + self.Ts
             self.i += 1
         return np.ascontiguousarray(image)
+    
+    def getImageAndMask(self, frame_id):
+        # retrieve the first image if its id is >= 0
+        if self.is_init is False and frame_id >= 0:
+            self.is_init = True
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+            self.i = frame_id
+
+        ret, image = self.cap.read()
+        if not ret:
+            raise RuntimeError(f"Error reading frame from file: {self.filename}")
+
+        if self.timestamps is not None:
+            if self.i > len(self.timestamps) - 1:
+                raise IndexError("Reached the end of the timestamp list.")
+            # read timestamps from timestamps file
+            self._timestamp = float(self.timestamps[self.i])
+            if self.i < len(self.timestamps) - 1:
+                self._next_timestamp = float(self.timestamps[self.i + 1])
+            else:
+                self._next_timestamp = self._timestamp + self.Ts
+            self.i += 1
+        else:
+            self._timestamp = float(self.cap.get(cv2.CAP_PROP_POS_MSEC) / 1000)
+            self._next_timestamp = self._timestamp + self.Ts
+            self.i += 1
+        
+        # Create a dummy mask (all ones) for demonstration purposes
+        print("Creating dummy mask for frame:", frame_id)
+        mask = np.ones(image.shape[:2], dtype=np.uint8)  # White mask
+
+        # mask_width = int(image.shape[1] * 0.5)
+        # mask_height = int(image.shape[0] * 0.5)
+        # mask_x_start = (image.shape[1] - mask_width) // 2
+        # mask_y_start = (image.shape[0] - mask_height) // 2
+        # mask[mask_y_start : mask_y_start + mask_height, mask_x_start : mask_x_start + mask_width] = 0
+
+        return np.ascontiguousarray(image), mask
 
 
 class LiveDataset(Dataset):
@@ -548,6 +617,33 @@ class KittiDataset(Dataset):
                 self._next_timestamp = self._timestamp + self.Ts
         self.is_ok = img is not None
         return np.ascontiguousarray(img) if img is not None else None
+    
+    def getImageAndMask(self, frame_id):
+        img = None
+        mask = None
+        if frame_id < self.max_frame_id:
+            try:
+                img = cv2.imread(
+                    self.path
+                    + "/sequences/"
+                    + self.name
+                    + self.image_left_path
+                    + str(frame_id).zfill(6)
+                    + ".png"
+                )
+                self._timestamp = self.timestamps[frame_id]
+                
+                # Create a dummy mask (all ones) for demonstration purposes
+                mask = np.ones(img.shape[:2], dtype=np.uint8)
+            except:
+                print("could not retrieve image: ", frame_id, " in path ", self.path)
+            if frame_id + 1 < self.max_frame_id:
+                self._next_timestamp = self.timestamps[frame_id + 1]
+            else:
+                self._next_timestamp = self._timestamp + self.Ts
+        self.is_ok = img is not None
+        return (np.ascontiguousarray(img) if img is not None else None,
+                mask if mask is not None else None)
 
     def getImageRight(self, frame_id):
         print(f"[KittiDataset] getImageRight: {frame_id}")

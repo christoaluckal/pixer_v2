@@ -133,6 +133,9 @@ class FeatureTrackingResult(object):
             None  # matched current keypoints, kps_cur_matched = kps_cur[idxs_cur]
         )
 
+        self.kps_before_mask = None  # matched current keypoints before applying geometric mask
+        self.kps_after_mask = None  # matched current keypoints after applying geometric mask
+
 
 # Base class for a feature tracker.
 # It mainly contains a feature manager and a feature matcher.
@@ -193,7 +196,7 @@ class FeatureTracker(object):
         return None, None
 
     # out: FeatureTrackingResult()
-    def track(self, image_ref, image_cur, kps_ref, des_ref):
+    def track(self, image_ref, image_cur, kps_ref, des_ref, track_mask=None):
         return FeatureTrackingResult()
 
 
@@ -249,7 +252,16 @@ class LkFeatureTracker(FeatureTracker):
         return self.feature_manager.detect(frame, mask), None
 
     # out: FeatureTrackingResult()
-    def track(self, image_ref, image_cur, kps_ref, des_ref=None):
+    def track(self, image_ref, image_cur, kps_ref, des_ref=None, track_mask=None):
+        kps_ref_copy = kps_ref.copy()
+
+        # Masking of keypoints to track
+        if track_mask is not None:
+            kps_ref = np.array(
+                [kp for i, kp in enumerate(kps_ref) if track_mask[int(kp[1]), int(kp[0])]],
+                dtype=np.float32,
+            )
+
         kps_cur, st, err = cv2.calcOpticalFlowPyrLK(
             image_ref, image_cur, kps_ref, None, **self.lk_params
         )  # shape: [k,2] [k,1] [k,1]
@@ -264,6 +276,8 @@ class LkFeatureTracker(FeatureTracker):
             res.kps_ref_matched
         )  # with LK we follow feature trails hence we can forget unmatched features
         res.kps_cur = res.kps_cur_matched
+        res.kps_before_mask = kps_ref_copy.copy()
+        res.kps_after_mask = kps_ref.copy()
         res.des_ref = None
         res.des_cur = None
         return res
@@ -330,11 +344,21 @@ class DescriptorFeatureTracker(FeatureTracker):
         return self.feature_manager.detectAndCompute(frame, mask)
 
     # out: FeatureTrackingResult()
-    def track(self, image_ref, image_cur, kps_ref, des_ref):
+    def track(self, image_ref, image_cur, kps_ref, des_ref, track_mask=None):
         kps_cur, des_cur = self.detectAndCompute(image_cur)
         # convert from list of keypoints to an array of points
         kps_cur = np.array([x.pt for x in kps_cur], dtype=np.float32)
+        kps_cur_copy = kps_cur.copy()
         # Printer.orange(des_ref.shape)
+
+        # Masking of keypoints to track
+        if track_mask is not None:
+            kps_cur = np.array(
+                [kp for i, kp in enumerate(kps_cur) if track_mask[int(kp[1]), int(kp[0])]],
+                dtype=np.float32,
+            )
+
+
         matching_result = self.matcher.match(
             image_ref, image_cur, des1=des_ref, des2=des_cur, kps1=kps_ref, kps2=kps_cur
         )  # knnMatch(queryDescriptors,trainDescriptors)
@@ -346,6 +370,8 @@ class DescriptorFeatureTracker(FeatureTracker):
         res.kps_cur = kps_cur  # all the current keypoints
         res.des_ref = des_ref  # all the reference descriptors
         res.des_cur = des_cur  # all the current descriptors
+        res.kps_before_mask = kps_cur_copy.copy()
+        res.kps_after_mask = kps_cur.copy()
 
         res.kps_ref_matched = np.asarray(kps_ref[idxs_ref])  # the matched ref kps
         res.idxs_ref = np.asarray(idxs_ref)

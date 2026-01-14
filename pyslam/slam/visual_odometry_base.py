@@ -106,13 +106,13 @@ class VisualOdometryBase:
             self.gt_y = 0
             self.gt_z = 0
 
-    def process_first_frame(self, frame_id) -> None:
+    def process_first_frame(self, frame_id, vo_mask=None) -> None:
         pass
 
-    def process_frame(self, frame_id) -> None:
+    def process_frame(self, frame_id, vo_mask=None) -> None:
         pass
 
-    def track(self, img, img_right, depth, frame_id, timestamp) -> None:
+    def track(self, img, img_right, depth, frame_id, timestamp, vo_mask=None) -> None:
         if kVerbose:
             print("..................................")
             print(f"frame: {frame_id}, timestamp: {timestamp}")
@@ -125,11 +125,12 @@ class VisualOdometryBase:
         self.cur_depth = depth
         self.cur_timestamp = timestamp
         # manage and check stage
+        a,b,c,d,e,r,t,kp_b,kp_a, est_time = None, None, None, None, None, None, None, None, None, None
         if self.state == VoState.GOT_FIRST_IMAGE:
-            self.process_frame(frame_id)
+            a,b,c,d,e,r,t,kp_b,kp_a, est_time = self.process_frame(frame_id, vo_mask=vo_mask)
             self.update_history()
         elif self.state == VoState.NO_IMAGES_YET:
-            self.process_first_frame(frame_id)
+            d,e = self.process_first_frame(frame_id, vo_mask=vo_mask)
             self.state = VoState.GOT_FIRST_IMAGE
         self.prev_image = self.cur_image
         self.prev_image_right = self.cur_image_right
@@ -137,6 +138,7 @@ class VisualOdometryBase:
         self.prev_timestamp = self.cur_timestamp
         # update main timer (for profiling)
         self.timer_main.refresh()
+        return a,b,c,d,e,r,t,kp_b,kp_a, est_time
 
     def update_history(self) -> None:
         if self.init_history and (self.gt_x is not None):

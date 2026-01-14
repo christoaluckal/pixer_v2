@@ -30,7 +30,7 @@ from pyslam.utilities.utils_geom import poseRt, is_rotation_matrix, closest_rota
 from pyslam.utilities.timer import TimerFps
 from pyslam.io.ground_truth import GroundTruth
 from pyslam.slam.visual_odometry_base import VoState, VisualOdometryBase
-
+import time
 
 kVerbose = True
 
@@ -143,7 +143,7 @@ class VisualOdometryEducational(VisualOdometryBase):
         print(f"num inliers in pose estimation: {self.pose_estimation_inliers}")
         return R, t  # Rrc, trc (with respect to 'ref' frame)
 
-    def process_first_frame(self, frame_id) -> None:
+    def process_first_frame(self, frame_id, vo_mask=None) -> None:
         # convert image to gray if needed
         if self.cur_image.ndim > 2:
             self.cur_image = cv2.cvtColor(self.cur_image, cv2.COLOR_RGB2GRAY)
@@ -156,22 +156,33 @@ class VisualOdometryEducational(VisualOdometryBase):
             else None
         )
         self.draw_img = self.drawFeatureTracks(self.cur_image)
+        return self.kps_ref, self.des_ref
 
-    def process_frame(self, frame_id) -> None:
+    def process_frame(self, frame_id, vo_mask=None) -> None:
         # convert image to gray if needed
         if self.cur_image.ndim > 2:
             self.cur_image = cv2.cvtColor(self.cur_image, cv2.COLOR_RGB2GRAY)
+
+
         # track features
         self.timer_feat.start()
         self.track_result = self.feature_tracker.track(
-            self.prev_image, self.cur_image, self.kps_ref, self.des_ref
+            self.prev_image, self.cur_image, self.kps_ref, self.des_ref, track_mask=vo_mask
         )
         self.timer_feat.refresh()
         # estimate pose
         self.timer_pose_est.start()
-        R, t = self.estimatePose(
-            self.track_result.kps_ref_matched, self.track_result.kps_cur_matched
-        )
+        start_time = time.perf_counter()
+        try:
+            R, t = self.estimatePose(
+                self.track_result.kps_ref_matched, self.track_result.kps_cur_matched
+            )
+        except Exception as e:
+            R = np.eye(3)
+            t = np.zeros((3, 1))
+            print("Pose estimation failed: ", e)
+        end_time = time.perf_counter()
+        total_est_time = end_time - start_time
         self.timer_pose_est.refresh()
         # update keypoints history
         self.kps_ref = self.track_result.kps_ref
@@ -218,8 +229,9 @@ class VisualOdometryEducational(VisualOdometryBase):
                 print(f"Correcting rotation matrix: {self.cur_R}")
                 self.cur_R = closest_rotation_matrix(self.cur_R)
             self.cur_t = self.cur_t + absolute_scale * self.cur_R @ t
-        # draw image
-        self.draw_img = self.drawFeatureTracks(self.cur_image)
+        # draw image with mask
+        draw_img = cv2.bitwise_and(self.cur_image, self.cur_image, mask=vo_mask) if vo_mask is not None else self.cur_image
+        self.draw_img = self.drawFeatureTracks(draw_img)
         # check if we have enough features to track otherwise detect new ones and start tracking from them (used for LK tracker)
         if (self.feature_tracker.tracker_type == FeatureTrackerTypes.LK) and (
             self.kps_ref.shape[0] < self.feature_tracker.num_features
@@ -232,6 +244,8 @@ class VisualOdometryEducational(VisualOdometryBase):
                 print("# new detected points: ", self.kps_cur.shape[0])
         self.kps_ref = self.kps_cur
         self.des_ref = self.des_cur
+
+        return self.num_matched_kps, self.num_inliers, self.average_pixel_shift, self.kpn_cur, self.des_cur, R, t, self.track_result.kps_before_mask, self.track_result.kps_after_mask, total_est_time
 
     def drawFeatureTracks(self, img, reinit=False):
         draw_img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
