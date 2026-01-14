@@ -79,7 +79,8 @@ kUseRerun = True
 use or not pangolin (if you want to use it then you need to install it by using the script install_thirdparty.sh)
 """
 
-
+import subprocess
+from pathlib import Path
 
 def factory_plot2d(*args, **kwargs):
     if kVisualize:
@@ -89,8 +90,78 @@ def factory_plot2d(*args, **kwargs):
             return Mplot2d(*args, **kwargs)
     else:
         return None
+    
+def run_evo(cmd, cwd=None):
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+    subprocess.run(cmd, check=True, cwd=cwd, env=env)
+    
+def generate_evo_report(evo_cand, evo_gt, out_dir="evo_report", monocular=False, rpe_delta=1, orientation="xz"):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-def process_data(results: dict, images=None,masks=None, draw_tracks=False, plot_traj=True, traj_skips=1):
+    est = evo_cand
+    gt = evo_gt
+    
+    # common flags
+    align = ["-a"]
+    if monocular:
+        align += ["--correct_scale"]
+
+    # APE
+    run_evo([
+        "evo_ape", "kitti", str(gt), str(est),
+        *align,
+        "--save_results", str(out_dir / "ape.zip"),
+        "--save_plot", str(out_dir / "ape.png"),
+    ])
+
+    # RPE (per-frame by default; can change delta)
+    run_evo([
+        "evo_rpe", "kitti", str(gt), str(est),
+        *align,
+        "--delta", str(rpe_delta),
+        "--save_results", str(out_dir / "rpe.zip"),
+        "--save_plot", str(out_dir / "rpe.png"),
+    ])
+
+    # Trajectory overlay (saved only)
+    run_evo([
+        "evo_traj", "kitti", str(gt), str(est),
+        "--plot_mode", orientation,
+        "--save_plot", str(out_dir / f"traj_{orientation}.png"),
+    ])
+
+    # Also save stdout tables (nice for quick diff/grep)
+    (out_dir / "ape.txt").write_text(
+        subprocess.check_output(
+            ["evo_ape", "kitti", str(gt), str(est), *align],
+            env={**os.environ, "MPLBACKEND": "Agg"},
+            text=True
+        )
+    )
+    (out_dir / "rpe.txt").write_text(
+        subprocess.check_output(
+            ["evo_rpe", "kitti", str(gt), str(est), *align,
+             "--delta", str(rpe_delta)],
+            env={**os.environ, "MPLBACKEND": "Agg"},
+            text=True
+        )
+    )
+
+    return out_dir
+
+
+def process_data(results: dict, 
+                 images=None,
+                 masks=None, 
+                 save_evo_report=True,
+                 save_pkl=True,
+                 draw_tracks=False, 
+                 plot_traj=True, 
+                 traj_skips=1):
+
+    
 
     exp_name = results['exp_name']
     name = results['feature_name']
@@ -111,6 +182,17 @@ def process_data(results: dict, images=None,masks=None, draw_tracks=False, plot_
     gtzs = results['gtzs']
     est_times = results['est_times']
 
+    evo_cands = results['evo_cands']
+    evo_gts = results['evo_gts']
+
+    run_folder = os.path.join(kResultsFolder, exp_name)
+    os.makedirs(run_folder, exist_ok=True)
+
+    if save_pkl:
+        with open(f'{run_folder}/{exp_name}.pkl', 'wb') as f:
+            pickle.dump(results, f)
+
+
     print_str = f'''
         matched_kps: {np.mean(matched_kps)}
         num_inliers: {np.mean(num_inliers)}
@@ -130,9 +212,11 @@ def process_data(results: dict, images=None,masks=None, draw_tracks=False, plot_
         original_kps: {np.sum([len(kp) for kp in original_kps])/len(original_kps)}
         masked_kps: {np.sum([len(kp) for kp in masked_kps])/len(masked_kps)}
         est_times: {np.sum(est_times)/len(est_times)}
+        evo_cands: {len(evo_cands)}
+        evo_gts: {len(evo_gts)}
             '''
     print(print_str)
-    with open(f'{kResultsFolder}/{exp_name}_stats.txt', 'w') as f:
+    with open(f'{run_folder}/{exp_name}_stats.txt', 'w') as f:
         f.write(print_str)
 
     if draw_tracks:
@@ -144,7 +228,7 @@ def process_data(results: dict, images=None,masks=None, draw_tracks=False, plot_
         ax[0].legend()
         ax[1].plot(idxs, px_shifts, label='px_shifts')
         ax[1].legend()
-        plt.savefig(f'{kResultsFolder}/{exp_name}_kp_inliers.png')
+        plt.savefig(f'{run_folder}/{exp_name}_kp_inliers.png')
         plt.close()
 
         # Initialize an empty list to store matches between consecutive frames
@@ -238,10 +322,10 @@ def process_data(results: dict, images=None,masks=None, draw_tracks=False, plot_
         plt.ylabel('Frame ID')
         plt.title(f'Feature Tracks Over Multiple Frames - {name}')
         plt.gca().invert_yaxis() 
-        plt.savefig(f'{kResultsFolder}/{exp_name}_tracks.png')
+        plt.savefig(f'{run_folder}/{exp_name}_tracks.png')
         plt.close()
 
-        with open(f'{kResultsFolder}/{exp_name}_tracks.pkl', 'wb') as f:
+        with open(f'{run_folder}/{exp_name}_tracks.pkl', 'wb') as f:
             pickle.dump(tracks, f)
 
         
@@ -262,17 +346,29 @@ def process_data(results: dict, images=None,masks=None, draw_tracks=False, plot_
         plt.ylabel('y (m)')
         plt.title(f'2D Trajectory - {name}')
         plt.legend()
-        plt.savefig(f"{kResultsFolder}/{exp_name}_2d.png")
+        plt.savefig(f"{run_folder}/{exp_name}_2d.png")
         plt.close()
 
-    print(f'@@@@@@@@@@@@@@@@ SAVED TRAJ AT {kResultsFolder}/{exp_name}_trajectory.csv')
+    print(f'@@@@@@@@@@@@@@@@ SAVED TRAJ AT {run_folder}/{exp_name}_trajectory.csv')
 
-    with open(f'{kResultsFolder}/{exp_name}_trajectory.csv', 'w') as f:
-        print(f"saving {kResultsFolder}/{exp_name}_2d.csv with {len(xs)} points")
+    with open(f'{run_folder}/{exp_name}_trajectory.csv', 'w') as f:
+        print(f"saving {run_folder}/{exp_name}_2d.csv with {len(xs)} points")
         f.write(f'i,x,y,z,gtx,gty,gtz\n')
         for i in range(len(xs)):
             # f.write(f'{xs[i]},{ys[i]},{zs[i]},{gtxs[i]},{gtys[i]},{gtzs[i]}\n')
             f.write(f'{i},{xs[i]},{ys[i]},{zs[i]},{gtxs[i]},{gtys[i]},{gtzs[i]}\n')
+
+    if save_evo_report:
+        np.savetxt(f'{run_folder}/{exp_name}_evo_cands.txt', np.array(evo_cands), fmt='%.9f')
+        np.savetxt(f'{run_folder}/{exp_name}_evo_gts.txt', np.array(evo_gts), fmt='%.9f')
+
+        evo_report_dir = generate_evo_report(
+            evo_cand=f'{run_folder}/{exp_name}_evo_cands.txt',
+            evo_gt=f'{run_folder}/{exp_name}_evo_gts.txt',
+            out_dir=f'{run_folder}/{exp_name}_evo_report',
+            monocular=True,
+        )
+        print(f'@@@@@@@@@@@@@@@@ SAVED EVO REPORT AT {evo_report_dir}')
 
     return
     
@@ -285,6 +381,8 @@ def run_exp(
         feature_num: int = 2000,
         max_images: int = -1,
         save_intermediate: bool = False,
+        save_pkl: bool = True,
+        save_evo_report: bool = True,
         plot_tracks: bool = False,
         plot_traj: bool = False,
         ):
@@ -394,7 +492,8 @@ def run_exp(
     original_kps = []
     masked_kps = []
     est_times = []
-
+    evo_cands = []
+    evo_gts = []
 
     while True:
         if img_id >= max_images-1 and max_images > 0:
@@ -434,12 +533,18 @@ def run_exp(
                 x, y, z = vo.traj3d_est[-1]
                 gt_x, gt_y, gt_z = vo.traj3d_gt[-1]
 
+                est = vo.evo_cand[-1]
+                gt = vo.evo_gt[-1]
+
                 xs.append(x)
                 ys.append(y)
                 zs.append(z)
                 gtxs.append(gt_x)
                 gtys.append(gt_y)
                 gtzs.append(gt_z)
+
+                evo_cands.append(est)
+                evo_gts.append(gt)
 
                 if kVisualize:
 
@@ -574,21 +679,32 @@ def run_exp(
         'original_kps': original_kps,
         'masked_kps': masked_kps,
         'est_times': est_times,
+        'evo_cands': evo_cands,
+        'evo_gts': evo_gts,
     }
 
-    with open(f'{kResultsFolder}/{exp_name}.pkl', 'wb') as f:
-        pickle.dump(results, f)
 
-    process_data(results, images=images, masks=images, draw_tracks=plot_tracks, plot_traj=plot_traj, traj_skips=20)
+
+    # process_data(results, images=images, masks=images, draw_tracks=plot_tracks, plot_traj=plot_traj, traj_skips=20)
+    process_data(
+        results, 
+        images=images, 
+        masks=images, 
+        save_evo_report=save_evo_report,
+        save_pkl=save_pkl,
+        draw_tracks=plot_tracks, 
+        plot_traj=plot_traj, 
+        traj_skips=20
+    )
 
 if __name__ == "__main__":
 
     run_exp(
-        exp_name="unmasked",
+        exp_name="masked",
         feature_type = FeatureTrackerConfigs.LK_SHI_TOMASI,
         feature_name = "LK_SHI_TOMASI",
         feature_num = 2000,
-        max_images = 300,
+        max_images = 1000,
         save_intermediate = True,
         plot_tracks = False,
         plot_traj = True,

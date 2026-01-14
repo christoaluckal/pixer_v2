@@ -137,7 +137,7 @@ class Dataset(object):
             if self.is_ok:
                 Printer.yellow(f"Dataset end: {self.name}, path: {self.path}, frame id: {frame_id}")
                 self.is_ok = False
-            return None
+            return None, None
         try:
             img, mask = self.getImageAndMask(frame_id)
             if img is None:
@@ -313,11 +313,11 @@ class VideoDataset(Dataset):
         print("Creating dummy mask for frame:", frame_id)
         mask = np.ones(image.shape[:2], dtype=np.uint8)  # White mask
 
-        # mask_width = int(image.shape[1] * 0.5)
-        # mask_height = int(image.shape[0] * 0.5)
-        # mask_x_start = (image.shape[1] - mask_width) // 2
-        # mask_y_start = (image.shape[0] - mask_height) // 2
-        # mask[mask_y_start : mask_y_start + mask_height, mask_x_start : mask_x_start + mask_width] = 0
+        mask_width = int(image.shape[1] * 0.5)
+        mask_height = int(image.shape[0] * 0.5)
+        mask_x_start = (image.shape[1] - mask_width) // 2
+        mask_y_start = (image.shape[0] - mask_height) // 2
+        mask[mask_y_start : mask_y_start + mask_height, mask_x_start : mask_x_start + mask_width] = 0
 
         return np.ascontiguousarray(image), mask
 

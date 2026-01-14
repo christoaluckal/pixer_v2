@@ -84,6 +84,9 @@ class VisualOdometryBase:
         self.timer_verbose = False  # set this to True if you want to print timings
         self.timer_main = TimerFps("VO", is_verbose=self.timer_verbose)
 
+        self.evo_cand = []
+        self.evo_gt = []
+
     # get current translation scale from ground-truth if groundtruth is not None
     def update_gt_data(self, frame_id):
         if self.groundtruth is not None:
@@ -164,3 +167,14 @@ class VisualOdometryBase:
             self.poses.append(poseRt(self.cur_R, np.array(p).ravel()))
             self.pose_timestamps.append(self.cur_timestamp)
             # self.poses.append(poseRt(self.cur_R, p[0]))
+
+
+            # For EVO calculations
+            T_est = cur_T
+            kitti_est = T_est[:3, :4].reshape(-1)   # shape (12,)
+            self.evo_cand.append(kitti_est)
+
+            # ground truth pose (KITTI format)
+            T_gt = gt_T
+            kitti_gt = T_gt[:3, :4].reshape(-1)     # shape (12,)
+            self.evo_gt.append(kitti_gt)
