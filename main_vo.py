@@ -35,7 +35,7 @@ from pyslam.slam.visual_odometry_rgbd import (
     VisualOdometryRgbdTensor,
 )
 from pyslam.slam.camera import PinholeCamera
-
+from pyslam.io.silk_masker import SilkMaskGenerator
 from pyslam.io.ground_truth import groundtruth_factory
 from pyslam.io.dataset_factory import dataset_factory
 from pyslam.io.dataset_types import DatasetType, SensorType
@@ -51,6 +51,15 @@ from pyslam.local_features.feature_tracker import (
 from pyslam.local_features.feature_tracker_configs import FeatureTrackerConfigs
 
 from pyslam.utilities.utils_sys import Printer
+import torch
+mask_gen = None
+mask_gen = SilkMaskGenerator(
+    dnn_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/dnn.ckpt",
+    uh_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/uh_mc100.ckpt",
+    prob_thresh=0.0,
+    uncer_thresh=0.1,
+    device="cuda" if torch.cuda.is_available() else "cpu"
+)
 
 import pickle
 import sys
@@ -402,6 +411,9 @@ def run_exp(
 
     dataset = dataset_factory(config)
 
+    # ADD MASKING GENERATOR
+    dataset.set_mask_generator(mask_gen)
+
     groundtruth = groundtruth_factory(config.dataset_settings)
 
     cam = PinholeCamera(config)
@@ -500,6 +512,9 @@ def run_exp(
             break
         img = None
         mask = None
+
+        
+
         if dataset.is_ok:
             timestamp = dataset.getTimestamp()  # get current timestamp
             # img = dataset.getImageColor(img_id)
@@ -512,6 +527,8 @@ def run_exp(
             )
 
         if img is not None:
+            if img_id == 1:
+                cv2.imwrite("silk_data/frame.png", img)
             matched_kp, num_inlier, px_shift, kp_cur, des_cur,rot,trans, kp_before, kp_after, est_time = vo.track(img, img_right, depth, img_id, timestamp, vo_mask=mask)  # main VO function
             if matched_kp is not None:
                 images.append(img)

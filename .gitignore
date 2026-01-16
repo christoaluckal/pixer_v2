@@ -11,6 +11,8 @@ __pycache__
 tmp
 build
 data
+silk
+silk_data
 debug.txt
 groundtruth.txt
 kitti

@@ -122,7 +122,7 @@ class VisualOdometryBase:
         # check coherence of image size with camera settings
         assert (
             img.shape[0] == self.cam.height and img.shape[1] == self.cam.width
-        ), "Frame: provided image has not the same size as the camera model or image is not grayscale"
+        ), f"Frame: provided image has not the same size as the camera model {img.shape} vs {self.cam.width}x{self.cam.height}) or image is not grayscale {img.ndim}D"
         self.cur_image = img
         self.cur_image_right = img_right
         self.cur_depth = depth

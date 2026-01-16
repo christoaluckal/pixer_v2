@@ -83,6 +83,8 @@ class Dataset(object):
         self.ignore_label = None  # ignored if none
         self.minimal_config = MinimalDatasetConfig()
 
+        self.mask_generator = None
+
     def sensorType(self):
         return self.sensor_type
 
@@ -103,6 +105,9 @@ class Dataset(object):
 
     def getDepthRight(self, frame_id):
         return None
+    
+    def set_mask_generator(self, mask_generator):
+        self.mask_generator = mask_generator
 
     # Adjust frame id with start frame id only here
     def getImageColor(self, frame_id):
@@ -140,6 +145,7 @@ class Dataset(object):
             return None, None
         try:
             img, mask = self.getImageAndMask(frame_id)
+            
             if img is None:
                 return None, None
             if img.ndim == 2:
@@ -308,17 +314,20 @@ class VideoDataset(Dataset):
             self._timestamp = float(self.cap.get(cv2.CAP_PROP_POS_MSEC) / 1000)
             self._next_timestamp = self._timestamp + self.Ts
             self.i += 1
-        
+
+
         # Create a dummy mask (all ones) for demonstration purposes
-        print("Creating dummy mask for frame:", frame_id)
-        mask = np.ones(image.shape[:2], dtype=np.uint8)  # White mask
+        # print("Creating dummy mask for frame:", frame_id)
+        # mask = np.ones(image.shape[:2], dtype=np.uint8)  # White mask
 
-        mask_width = int(image.shape[1] * 0.5)
-        mask_height = int(image.shape[0] * 0.5)
-        mask_x_start = (image.shape[1] - mask_width) // 2
-        mask_y_start = (image.shape[0] - mask_height) // 2
-        mask[mask_y_start : mask_y_start + mask_height, mask_x_start : mask_x_start + mask_width] = 0
+        # mask_width = int(image.shape[1] * 0.5)
+        # mask_height = int(image.shape[0] * 0.5)
+        # mask_x_start = (image.shape[1] - mask_width) // 2
+        # mask_y_start = (image.shape[0] - mask_height) // 2
+        # mask[mask_y_start : mask_y_start + mask_height, mask_x_start : mask_x_start + mask_width] = 0
 
+        mask = self.mask_generator(image) if self.mask_generator is not None else None
+        print(f"Image Shape: {image.shape}, Mask Shape: {mask.shape if mask is not None else 'No Mask'}")
         return np.ascontiguousarray(image), mask
 
 
