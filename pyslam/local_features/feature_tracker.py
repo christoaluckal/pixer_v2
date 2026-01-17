@@ -346,6 +346,7 @@ class DescriptorFeatureTracker(FeatureTracker):
     # out: FeatureTrackingResult()
     def track(self, image_ref, image_cur, kps_ref, des_ref, track_mask=None):
         kps_cur, des_cur = self.detectAndCompute(image_cur)
+        
         # convert from list of keypoints to an array of points
         kps_cur = np.array([x.pt for x in kps_cur], dtype=np.float32)
         kps_cur_copy = kps_cur.copy()
@@ -353,12 +354,30 @@ class DescriptorFeatureTracker(FeatureTracker):
 
         # Masking of keypoints to track
         if track_mask is not None:
-            kps_cur = np.array(
-                [kp for i, kp in enumerate(kps_cur) if track_mask[int(kp[1]), int(kp[0])]],
-                dtype=np.float32,
-            )
+            H, W = track_mask.shape[:2]
+            keep = [
+                i for i, (x, y) in enumerate(kps_cur)
+                if 0 <= int(x) < W and 0 <= int(y) < H and track_mask[int(y), int(x)]
+            ]
 
+            kps_cur = kps_cur[keep]
+            if des_cur is not None:
+                des_cur = des_cur[keep]
 
+        if kps_cur.shape[0] == 0 or des_cur is None:
+            res = FeatureTrackingResult()
+            res.kps_ref = kps_ref
+            res.des_ref = des_ref
+            res.kps_cur = np.empty((0, 2), dtype=np.float32)
+            res.des_cur = des_cur  # None is OK if matcher isn't called
+            res.kps_ref_matched = np.empty((0, 2), dtype=np.float32)
+            res.kps_cur_matched = np.empty((0, 2), dtype=np.float32)
+            res.idxs_ref = np.empty((0,), dtype=np.int32)
+            res.idxs_cur = np.empty((0,), dtype=np.int32)
+            res.kps_before_mask = kps_cur_copy
+            res.kps_after_mask = res.kps_cur
+            return res
+        
         matching_result = self.matcher.match(
             image_ref, image_cur, des1=des_ref, des2=des_cur, kps1=kps_ref, kps2=kps_cur
         )  # knnMatch(queryDescriptors,trainDescriptors)

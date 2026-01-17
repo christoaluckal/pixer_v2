@@ -52,14 +52,7 @@ from pyslam.local_features.feature_tracker_configs import FeatureTrackerConfigs
 
 from pyslam.utilities.utils_sys import Printer
 import torch
-mask_gen = None
-mask_gen = SilkMaskGenerator(
-    dnn_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/dnn.ckpt",
-    uh_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/uh_mc100.ckpt",
-    prob_thresh=0.0,
-    uncer_thresh=0.1,
-    device="cuda" if torch.cuda.is_available() else "cpu"
-)
+
 
 import pickle
 import sys
@@ -190,6 +183,7 @@ def process_data(results: dict,
     gtys = results['gtys']
     gtzs = results['gtzs']
     est_times = results['est_times']
+    loop_total_time = results['total_loop_time']
 
     evo_cands = results['evo_cands']
     evo_gts = results['evo_gts']
@@ -223,6 +217,7 @@ def process_data(results: dict,
         est_times: {np.sum(est_times)/len(est_times)}
         evo_cands: {len(evo_cands)}
         evo_gts: {len(evo_gts)}
+        total_loop_time: {loop_total_time} seconds
             '''
     print(print_str)
     with open(f'{run_folder}/{exp_name}_stats.txt', 'w') as f:
@@ -387,6 +382,7 @@ def run_exp(
         exp_name: str = "",
         feature_type = FeatureTrackerConfigs.LK_SHI_TOMASI,
         feature_name: str = "LK_SHI_TOMASI",
+        is_baseline: bool = False,
         feature_num: int = 2000,
         max_images: int = -1,
         save_intermediate: bool = False,
@@ -405,14 +401,26 @@ def run_exp(
     if exp_name == "":
         exp_name = f'{config_name}_#{feature_name}#_@{feature_num}@' 
     else:
-        exp_name = f'{exp_name}_#{feature_name}#_@{feature_num}@'
+        # exp_name = f'{exp_name}_#{feature_name}#_@{feature_num}@'
+        pass
     
     config = Config()
 
     dataset = dataset_factory(config)
 
-    # ADD MASKING GENERATOR
-    dataset.set_mask_generator(mask_gen)
+    mask_gen = None
+
+    if not is_baseline:
+        mask_gen = SilkMaskGenerator(
+            dnn_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/dnn.ckpt",
+            uh_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/uh_mc100.ckpt",
+            prob_thresh=0.0,
+            uncer_thresh=0.1,
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+
+        # ADD MASKING GENERATOR
+        dataset.set_mask_generator(mask_gen)
 
     groundtruth = groundtruth_factory(config.dataset_settings)
 
@@ -420,10 +428,10 @@ def run_exp(
 
     # num_features = 2000  # how many features do you want to detect and track?
     num_features = feature_num
-    if (
-        config.num_features_to_extract > 0
-    ):  # override the number of features to extract if we set something in the settings file
-        num_features = config.num_features_to_extract
+    # if (
+    #     config.num_features_to_extract > 0
+    # ):  # override the number of features to extract if we set something in the settings file
+    #     num_features = config.num_features_to_extract
 
     # select your tracker configuration (see the file feature_tracker_configs.py)
     # LK_SHI_TOMASI, LK_FAST
@@ -507,6 +515,7 @@ def run_exp(
     evo_cands = []
     evo_gts = []
 
+    loop_start_time = time.perf_counter()
     while True:
         if img_id >= max_images-1 and max_images > 0:
             break
@@ -677,6 +686,9 @@ def run_exp(
 
         cv2.destroyAllWindows()
     
+    loop_end_time = time.perf_counter()
+    total_loop_time = loop_end_time - loop_start_time
+
     results = {
         'exp_name': exp_name,
         'feature_name': feature_name,
@@ -698,6 +710,7 @@ def run_exp(
         'est_times': est_times,
         'evo_cands': evo_cands,
         'evo_gts': evo_gts,
+        'total_loop_time': total_loop_time,
     }
 
 
@@ -716,13 +729,52 @@ def run_exp(
 
 if __name__ == "__main__":
 
-    run_exp(
-        exp_name="masked",
-        feature_type = FeatureTrackerConfigs.LK_SHI_TOMASI,
-        feature_name = "LK_SHI_TOMASI",
-        feature_num = 2000,
-        max_images = 1000,
-        save_intermediate = True,
-        plot_tracks = False,
-        plot_traj = True,
-    )
+    max_images = 100
+    FEATURE_TRACKER_PRESETS = [
+        ("LK_SHI_TOMASI", FeatureTrackerConfigs.LK_SHI_TOMASI),
+        ("LK_FAST", FeatureTrackerConfigs.LK_FAST),
+        ("ORB", FeatureTrackerConfigs.ORB),
+        ("FAST_ORB", FeatureTrackerConfigs.FAST_ORB),
+        ("SIFT", FeatureTrackerConfigs.SIFT),
+        ("AKAZE", FeatureTrackerConfigs.AKAZE),
+    ]
+
+    max_features = [2000]
+    base_lines = [True,False]
+
+    from itertools import product
+    import traceback
+    experiments = list(product(FEATURE_TRACKER_PRESETS, max_features, base_lines))
+
+    for (feature_name, feature_type), max_f, is_baseline in experiments:
+        exp_name = f'{"baseline" if is_baseline else "masked"}_${max_f}$_#{feature_name}#'
+        try:
+            run_exp(
+                exp_name=exp_name,
+                feature_type=feature_type,
+                feature_name=feature_name,
+                is_baseline=is_baseline,
+                feature_num=max_f,
+                max_images=max_images,
+                save_intermediate=False,
+                plot_tracks=False,
+                plot_traj=True,
+            )
+
+        except Exception as e:
+            print(f"Experiment {exp_name} failed with exception: {e}")
+            tb = traceback.format_exc()
+            with open(f'{kResultsFolder}/{exp_name}_error.txt', 'w') as f:
+                f.write(tb)
+            continue
+
+    # run_exp(
+    #     exp_name="masked",
+    #     feature_type = FeatureTrackerConfigs.LK_SHI_TOMASI,
+    #     feature_name = "LK_SHI_TOMASI",
+    #     feature_num = 2000,
+    #     max_images = 1000,
+    #     save_intermediate = True,
+    #     plot_tracks = False,
+    #     plot_traj = True,
+    # )

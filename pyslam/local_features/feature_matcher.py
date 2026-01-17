@@ -704,6 +704,7 @@ class FeatureMatcher:
                 self.norm_type, self.cross_check
             )  # if self.parallel else self.matcher
             if not row_matching:
+                
                 """
                 The result of matches = matcher.knnMatch() is a list of cv2.DMatch objects.
                 A DMatch object has the following attributes:
@@ -718,6 +719,7 @@ class FeatureMatcher:
                 # return MatcherUtils.goodMatchesSimple(matches, des1, des2, ratio_test)   # <= N.B.: this generates problem in SLAM since it can produce matches where a trainIdx index is associated to two (or more) queryIdx indexes
                 idxs1, idxs2 = MatcherUtils.goodMatchesOneToOne(matches, des1, des2, ratio_test)
                 # idxs1, idxs2 = MatcherUtils.goodMatchesOneToOneNumba(matches, des1, des2, ratio_test)
+                
             else:
                 assert max_disparity is not None
                 # we perform row matching for stereo images (matching rectified left and right images)
