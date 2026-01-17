@@ -40,7 +40,12 @@ from pyslam.utilities.utils_sys import Printer, locally_configure_qt_environment
 kScriptPath = os.path.realpath(__file__)
 kScriptFolder = os.path.dirname(kScriptPath)
 kRootFolder = os.path.join(kScriptFolder, "..")  # root folder of the repository
-kDefaultConfigPath = os.path.join(kRootFolder, "config.yaml")
+# kDefaultConfigPath = os.path.join(kRootFolder, "config.yaml")
+if not os.environ.get("PYSLAM_CONFIG"):
+    raise EnvironmentError(
+        "Environment variable PYSLAM_CONFIG not set. Please set it to the path of the config.yaml file."
+    )
+kDefaultConfigPath = os.path.join(kRootFolder, os.environ.get("PYSLAM_CONFIG", "config.yaml"))
 kDefaultConfigLibsPath = os.path.join(kRootFolder, "config_libs.yaml")
 
 

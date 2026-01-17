@@ -53,6 +53,8 @@ from pyslam.local_features.feature_tracker_configs import FeatureTrackerConfigs
 from pyslam.utilities.utils_sys import Printer
 import torch
 
+import silk.icra25.frame_score as fscore
+from silk.icra25.featureness import load_images
 
 import pickle
 import sys
@@ -184,6 +186,8 @@ def process_data(results: dict,
     gtzs = results['gtzs']
     est_times = results['est_times']
     loop_total_time = results['total_loop_time']
+    prob_thresh = results['prob_thresh']
+    uncer_thresh = results['uncer_thresh']
 
     evo_cands = results['evo_cands']
     evo_gts = results['evo_gts']
@@ -218,6 +222,8 @@ def process_data(results: dict,
         evo_cands: {len(evo_cands)}
         evo_gts: {len(evo_gts)}
         total_loop_time: {loop_total_time} seconds
+        prob_thresh: {prob_thresh}
+        uncer_thresh: {uncer_thresh}
             '''
     print(print_str)
     with open(f'{run_folder}/{exp_name}_stats.txt', 'w') as f:
@@ -386,10 +392,12 @@ def run_exp(
         feature_num: int = 2000,
         max_images: int = -1,
         save_intermediate: bool = False,
-        save_pkl: bool = True,
+        save_pkl: bool = False,
         save_evo_report: bool = True,
         plot_tracks: bool = False,
         plot_traj: bool = False,
+        prob_thresh: float = 0.0,
+        uncer_thresh: float = 0.1,
         ):
     
     if os.environ.get('PYSLAM_CONFIG') is None:
@@ -410,15 +418,34 @@ def run_exp(
 
     mask_gen = None
 
+    if not os.path.exists(f'{kResultsFolder}/logs'):
+        os.makedirs(f'{kResultsFolder}/logs')
+
     if not is_baseline:
         mask_gen = SilkMaskGenerator(
             dnn_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/dnn.ckpt",
             uh_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/uh_mc100.ckpt",
-            prob_thresh=0.0,
-            uncer_thresh=0.1,
+            prob_thresh=prob_thresh,
+            uncer_thresh=uncer_thresh,
             device="cuda" if torch.cuda.is_available() else "cpu"
         )
 
+        dummy_image = '/home/christoa/Developer/pixer/pixer_v2/silk_data/frame.png'
+        img_t = cv2.imread(dummy_image)
+        mask = mask_gen(img_t)
+
+
+        image_area = img_t.shape[0] * img_t.shape[1]
+        non_zero_area = np.sum(mask > 0)
+        cv2.imwrite(f'{kResultsFolder}/logs/{exp_name}_sample_mask.png', mask*255)
+        if non_zero_area / image_area < 0.01:
+            Printer.yellow(f"[Warning] The generated mask has very few features ({non_zero_area}/{image_area} = {non_zero_area/image_area*100:.4f}%) with prob_thresh={prob_thresh}, uncer_thresh={uncer_thresh}.")
+            raise ValueError("The generated mask has very few features. Please adjust the thresholds.")
+        elif non_zero_area / image_area > 0.99:
+            Printer.yellow(f"[Warning] The generated mask has almost all features ({non_zero_area}/{image_area} = {non_zero_area/image_area*100:.2f}%) with prob_thresh={prob_thresh}, uncer_thresh={uncer_thresh}.")
+        else:
+            Printer.green(f"The generated mask has {non_zero_area}/{image_area} = {non_zero_area/image_area*100:.2f}% features")
+            
         # ADD MASKING GENERATOR
         dataset.set_mask_generator(mask_gen)
 
@@ -711,6 +738,8 @@ def run_exp(
         'evo_cands': evo_cands,
         'evo_gts': evo_gts,
         'total_loop_time': total_loop_time,
+        'prob_thresh': prob_thresh,
+        'uncer_thresh': uncer_thresh,
     }
 
 
@@ -729,25 +758,71 @@ def run_exp(
 
 if __name__ == "__main__":
 
-    max_images = 100
+    max_images = 700
+
+    # LK_SHI_TOMASI,LK_FAST, ORB, SIFT, AKAZE SHI_TOMASI_ORB, SHI_TOMASI_FREAK, FAST_ORB, FAST_FREAK, ORB2, BRISK, BRISK_TFEAT, KAZE, ROOT_SIFT, SUPERPOINT, XFEAT, XFEAT_XFEAT, XFEAT_LIGHTGLUE, LIGHTGLUE, LIGHTGLUE_DISK, LIGHTGLUE_ALIKED, LIGHTGLUESIFT, DELF, D2NET, R2D2, LFNET, CONTEXTDESC, KEYNET, DISK, ALIKED, KEYNETAFFNETHARDNET, ORB2_FREAK, ORB2_BEBLID, ORB2_HARDNET, ORB2_SOSNET, ORB2_L2NET
+
     FEATURE_TRACKER_PRESETS = [
         ("LK_SHI_TOMASI", FeatureTrackerConfigs.LK_SHI_TOMASI),
         ("LK_FAST", FeatureTrackerConfigs.LK_FAST),
         ("ORB", FeatureTrackerConfigs.ORB),
-        ("FAST_ORB", FeatureTrackerConfigs.FAST_ORB),
         ("SIFT", FeatureTrackerConfigs.SIFT),
         ("AKAZE", FeatureTrackerConfigs.AKAZE),
+        ("SHI_TOMASI_ORB", FeatureTrackerConfigs.SHI_TOMASI_ORB),
+        ("SHI_TOMASI_FREAK", FeatureTrackerConfigs.SHI_TOMASI_FREAK),
+        ("FAST_ORB", FeatureTrackerConfigs.FAST_ORB),
+        ("FAST_FREAK", FeatureTrackerConfigs.FAST_FREAK),
+        ("ORB2", FeatureTrackerConfigs.ORB2),
+        ("BRISK", FeatureTrackerConfigs.BRISK),
+        ("BRISK_TFEAT", FeatureTrackerConfigs.BRISK_TFEAT),
+        # ("KAZE", FeatureTrackerConfigs.KAZE), Dont use
+        ("ROOT_SIFT", FeatureTrackerConfigs.ROOT_SIFT),
+        ("SUPERPOINT", FeatureTrackerConfigs.SUPERPOINT),
+        # ("XFEAT", FeatureTrackerConfigs.XFEAT), Dont use
+        # ("XFEAT_XFEAT", FeatureTrackerConfigs.XFEAT_XFEAT), Dont use
+        # ("XFEAT_LIGHTGLUE", FeatureTrackerConfigs.XFEAT_LIGHTGLUE), Dont use
+        ("LIGHTGLUE", FeatureTrackerConfigs.LIGHTGLUE),
+        # ("LIGHTGLUE_DISK", FeatureTrackerConfigs.LIGHTGLUE_DISK), Dont use
+        ("LIGHTGLUE_ALIKED", FeatureTrackerConfigs.LIGHTGLUE_ALIKED),
+        # ("LIGHTGLUESIFT", FeatureTrackerConfigs.LIGHTGLUESIFT),Dont use
+        # ("DELF", FeatureTrackerConfigs.DELF), Dont use
+        # ("D2NET", FeatureTrackerConfigs.D2NET), Error
+        # ("R2D2", FeatureTrackerConfigs.R2D2), Error
+        # ("LFNET", FeatureTrackerConfigs.LFNET), Dont use
+        # ("CONTEXTDESC", FeatureTrackerConfigs.CONTEXTDESC), Dont use
+        # ("KEYNET", FeatureTrackerConfigs.KEYNET), Dont use
+        # ("DISK", FeatureTrackerConfigs.DISK), Dont use
+        ("ALIKED", FeatureTrackerConfigs.ALIKED),
+        # ("KEYNETAFFNETHARDNET", FeatureTrackerConfigs.KEYNETAFFNETHARDNET), Dont use
+        ("ORB2_FREAK", FeatureTrackerConfigs.ORB2_FREAK),
+        ("ORB2_BEBLID", FeatureTrackerConfigs.ORB2_BEBLID),
+        ("ORB2_HARDNET", FeatureTrackerConfigs.ORB2_HARDNET),
+        ("ORB2_SOSNET", FeatureTrackerConfigs.ORB2_SOSNET),
+        ("ORB2_L2NET", FeatureTrackerConfigs.ORB2_L2NET),
+
     ]
 
-    max_features = [2000]
-    base_lines = [True,False]
+    FEATURE_TRACKER_PRESETS = FEATURE_TRACKER_PRESETS[::-1]
+
+    max_features = [1000, 2000]
+    base_lines = [False]
+
+    probs = np.arange(0.0,1.01,0.1)
+    uncers = np.arange(0.0,1.01,0.1)
 
     from itertools import product
     import traceback
-    experiments = list(product(FEATURE_TRACKER_PRESETS, max_features, base_lines))
+    experiments = list(product(FEATURE_TRACKER_PRESETS, max_features, base_lines, probs, uncers))
+    baselines = list(product(FEATURE_TRACKER_PRESETS, max_features, [True], [0.0], [0.0]))
 
-    for (feature_name, feature_type), max_f, is_baseline in experiments:
-        exp_name = f'{"baseline" if is_baseline else "masked"}_${max_f}$_#{feature_name}#'
+    experiments = baselines + experiments
+
+    import random
+    random.shuffle(experiments)
+
+    # for (feature_name, feature_type), max_f, is_baseline in experiments:
+    for (feature_name, feature_type), max_f, is_baseline, prob_thresh, uncer_thresh in experiments:
+        exp_name = f'{"baseline" if is_baseline else "masked"}_${max_f}$_#{feature_name}#_*{prob_thresh:.2f}*_<{uncer_thresh:.2f}>'
         try:
             run_exp(
                 exp_name=exp_name,
@@ -759,6 +834,8 @@ if __name__ == "__main__":
                 save_intermediate=False,
                 plot_tracks=False,
                 plot_traj=True,
+                prob_thresh=prob_thresh,
+                uncer_thresh=uncer_thresh,
             )
 
         except Exception as e:

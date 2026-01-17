@@ -36,7 +36,7 @@ prob_mean_1, prob_var_1, _ = model_uh(img_left)
 # prob_mean_2, prob_var_2, _ = model_uh(img_left)
 
 
-prob_thresh = 0.0 # Everything above this is considered as a feature
+prob_thresh = 0.5 # Everything above this is considered as a feature
 uncer_thresh = 0.1 # Everything below this is considered as a feature
 
 score_image_0 = fscore.featureness_image(prob_mean_1, prob_var_1, prob_thresh=prob_thresh, uncer_thresh=uncer_thresh).detach().cpu().numpy()
@@ -48,9 +48,9 @@ zero_cols = max(img_left.shape[3] - score_image_0.shape[1], 0)//2
 # score_image_0 = np.pad(score_image_0, ((0,zero_rows), (0,zero_cols)), mode='constant', constant_values=0)
 score_image_0 = np.pad(score_image_0, ((zero_rows,0), (zero_cols,0)), mode='constant', constant_values=0)
 
-print (score_image_0.shape)
-print (img_left_cv.shape)
-
+score_area = score_image_0.shape[0] * score_image_0.shape[1]
+non_zero_area = np.sum(score_image_0 > 0)
+print (f"Score image area: {score_area}, non-zero area: {non_zero_area} ({non_zero_area/score_area*100:.2f}%)")
 
 img_left_cv = cv2.cvtColor(img_left_cv, cv2.COLOR_BGR2RGB)
 img1_masked = mask_image(img_left_cv,score_image_0, intensity=0)

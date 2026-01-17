@@ -235,37 +235,37 @@ fi
 
 cd $ROOT_DIR
 
-print_blue "=================================================================="
-print_blue "Configuring and building thirdparty/mast3r ..."
+# print_blue "=================================================================="
+# print_blue "Configuring and building thirdparty/mast3r ..."
 
-if [ "$CUDA_VERSION" != "0" ]; then
-    # we need CUDA
+# if [ "$CUDA_VERSION" != "0" ]; then
+#     # we need CUDA
 
-    cd thirdparty
-    if [ ! -d mast3r ]; then
-        git clone --recursive https://github.com/naver/mast3r mast3r
-        git checkout e06b0093ddacfd8267cdafe5387954a650af0d3b
-        cd mast3r
-        git apply ../mast3r.patch
-        # DUST3R relies on RoPE positional embeddings for which you can compile some cuda kernels for faster runtime.
-        cd dust3r 
-        git apply ../../mast3r-dust3r.patch
-        cd croco 
-        git apply ../../../mast3r-dust3r-croco.patch
-        cd models/curope/
-        if [ "$CUDA_VERSION" != "0" ]; then        
-            python setup.py build_ext --inplace
-        fi
-        cd ../../../../    
-        make_dir checkpoints
-        cd checkpoints
-        if [ ! -f MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth ]; then
-            wget https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
-        fi
-    fi 
-else
-    print_yellow "MASt3R requires CUDA. Skipping..."
-fi 
+#     cd thirdparty
+#     if [ ! -d mast3r ]; then
+#         git clone --recursive https://github.com/naver/mast3r mast3r
+#         git checkout e06b0093ddacfd8267cdafe5387954a650af0d3b
+#         cd mast3r
+#         git apply ../mast3r.patch
+#         # DUST3R relies on RoPE positional embeddings for which you can compile some cuda kernels for faster runtime.
+#         cd dust3r 
+#         git apply ../../mast3r-dust3r.patch
+#         cd croco 
+#         git apply ../../../mast3r-dust3r-croco.patch
+#         cd models/curope/
+#         if [ "$CUDA_VERSION" != "0" ]; then        
+#             python setup.py build_ext --inplace
+#         fi
+#         cd ../../../../    
+#         make_dir checkpoints
+#         cd checkpoints
+#         if [ ! -f MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth ]; then
+#             wget https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
+#         fi
+#     fi 
+# else
+#     print_yellow "MASt3R requires CUDA. Skipping..."
+# fi 
 
 cd $ROOT_DIR
 
