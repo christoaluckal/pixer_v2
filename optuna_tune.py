@@ -1,89 +1,163 @@
 import optuna
 import math
-from pyslam.local_features.feature_tracker_configs import FeatureTrackerConfigs
-from main_vo import run_exp
-import wandb
-import torch
 import gc
-baseline_cache = {}
+import torch
+from main_vo import run_exp
+from pyslam.local_features.feature_tracker_configs import FeatureTrackerConfigs
+import json
+from pathlib import Path
 
-def get_baseline_rmse(tracker_name, feature_type, feature_num, max_images):
-    key = (tracker_name, feature_num, max_images)
-    if key not in baseline_cache:
-        baseline_cache[key] = run_exp(
-            exp_name=f"baseline_{tracker_name}_F{feature_num}",
-            feature_type=feature_type,
-            feature_name=tracker_name,
-            feature_num=feature_num,
-            max_images=max_images,
-            is_baseline=True,        # <- baseline path (no masking)
-            prob_thresh=0.0,         # unused in baseline, but harmless
-            uncer_thresh=0.0,
-            save_evo_report=False,
-            plot_traj=False,
-            optuna_mode=False,       # <- IMPORTANT: prevents wandb logging in your run_exp
+class OptunaWrapper:
+    def __init__(self, tracker_name: str, feature_num: int, max_images: int = 800):
+        self.tracker_name = tracker_name
+        self.feature_num = feature_num
+        self.max_images = max_images
+
+        self.tracker_map = {
+            "LK_SHI_TOMASI": FeatureTrackerConfigs.LK_SHI_TOMASI,
+            "ORB": FeatureTrackerConfigs.ORB,
+            "SIFT": FeatureTrackerConfigs.SIFT,
+            "ORB2": FeatureTrackerConfigs.ORB2,
+            "BRISK": FeatureTrackerConfigs.BRISK,
+            "SUPERPOINT": FeatureTrackerConfigs.SUPERPOINT,
+        }
+        self.feature_type = self.tracker_map[self.tracker_name]
+
+        self._baseline_rmse = None
+
+    def run_baseline(self) -> float:
+        if self._baseline_rmse is None:
+            self._baseline_rmse = run_exp(
+                exp_name=f"baseline_{self.tracker_name}_F{self.feature_num}",
+                feature_type=self.feature_type,
+                feature_name=self.tracker_name,
+                feature_num=self.feature_num,
+                max_images=self.max_images,
+                is_baseline=True,
+                prob_thresh=0.0,
+                uncer_thresh=0.0,
+                save_evo_report=False,
+                plot_traj=False,
+                optuna_mode=False,
+            )
+        return self._baseline_rmse
+
+    def objective(self, trial):
+        prob_thresh = trial.suggest_float("prob_thresh", 0.0, 1.0)
+        uncer_thresh = trial.suggest_float("uncer_thresh", 0.0, 1.0)
+
+        exp_name = (
+            f"optuna_{trial.number}_{self.tracker_name}_F{self.feature_num}"
+            f"_p{prob_thresh:.3f}_u{uncer_thresh:.3f}"
         )
-    return baseline_cache[key]
+
+        try:
+            rmse_base = self.run_baseline()
+            rmse_masked = run_exp(
+                exp_name=exp_name,
+                feature_type=self.feature_type,
+                feature_name=self.tracker_name,
+                feature_num=self.feature_num,
+                max_images=self.max_images,
+                is_baseline=False,
+                save_evo_report=False,
+                plot_traj=False,
+                prob_thresh=prob_thresh,
+                uncer_thresh=uncer_thresh,
+                optuna_mode=True,   # only successful trials should create wandb runs (per your logic)
+                base_rmse=rmse_base,  # if your run_exp uses it
+            )
+
+            # optional: store extra info for later export
+            trial.set_user_attr("rmse_base", rmse_base)
+            trial.set_user_attr("rmse_masked", rmse_masked)
+            trial.set_user_attr("improvement", rmse_base - rmse_masked)
+
+            return rmse_base - rmse_masked  # maximize improvement
+
+        except Exception:
+            return -math.inf
+
+        finally:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    def run_optimization(self, n_trials: int = 100, sampler_seed: int = 0):
+        sampler = optuna.samplers.TPESampler(seed=sampler_seed)
+        study = optuna.create_study(direction="maximize", sampler=sampler)
+        study.optimize(self.objective, n_trials=n_trials)
+        return study
 
 
-def objective(trial):
-    # sample parameters
-    # feature_num = trial.suggest_int("feature_num", 200, 3000, step=200)
-    feature_num = 3000
+def study_to_record(study, tracker_name: str, feature_num: int, max_images: int):
+    t = study.best_trial
+    rmse_base = t.user_attrs.get("rmse_base")
+    rmse_masked = t.user_attrs.get("rmse_masked")
+    improvement = t.value  # since objective is rmse_base - rmse_masked
 
-    prob_thresh = trial.suggest_float("prob_thresh", 0.0, 1.0)
-    uncer_thresh = trial.suggest_float("uncer_thresh", 0.0, 1.0)
-
-    # (optional) choose tracker preset
-    tracker_name = trial.suggest_categorical(
-        "tracker",
-        # ["LK_SHI_TOMASI", "ORB", "SIFT", "AKAZE", "LIGHTGLUE", "ALIKED"],
-        ["LK_SHI_TOMASI"],
-    )
-    tracker_map = {
-        "LK_SHI_TOMASI": FeatureTrackerConfigs.LK_SHI_TOMASI,
-        # "ORB": FeatureTrackerConfigs.ORB,
-        # "SIFT": FeatureTrackerConfigs.SIFT,
-        # "AKAZE": FeatureTrackerConfigs.AKAZE,
-        # "LIGHTGLUE": FeatureTrackerConfigs.LIGHTGLUE,
-        # "ALIKED": FeatureTrackerConfigs.ALIKED,
+    return {
+        "tracker": tracker_name,
+        "feature_num": feature_num,
+        "max_images": max_images,
+        "best": {
+            "objective_improvement": improvement,
+            "prob_thresh": t.params["prob_thresh"],
+            "uncer_thresh": t.params["uncer_thresh"],
+            "rmse_base": rmse_base,
+            "rmse_masked": rmse_masked,
+        },
+        "optuna": {
+            "best_trial_number": t.number,
+            "n_trials": len(study.trials),
+        },
     }
-    feature_type = tracker_map[tracker_name]
 
-    exp_name = f"optuna_{trial.number}_{tracker_name}_F{feature_num}_p{prob_thresh:.3f}_u{uncer_thresh:.3f}"
-    max_images = 800
+def run_suite(
+    trackers: list[str],
+    feature_nums: list[int],
+    max_images: int = 800,
+    n_trials: int = 100,
+    out_path: str = "results/optuna_best_params.json",
+):
+    results = []
 
-    try:
+    for tracker_name in trackers:
+        for feature_num in feature_nums:
+            wrapper = OptunaWrapper(
+                tracker_name=tracker_name,
+                feature_num=feature_num,
+                max_images=max_images,
+            )
+            study = wrapper.run_optimization(n_trials=n_trials, sampler_seed=0)
 
-        rmse_base = get_baseline_rmse(tracker_name, feature_type, feature_num, max_images)
+            rec = study_to_record(study, tracker_name, feature_num, max_images)
+            results.append(rec)
 
-        rmse = run_exp(
-            exp_name=exp_name,
-            feature_type=feature_type,
-            feature_name=tracker_name,
-            feature_num=feature_num,
-            max_images=max_images,
-            save_evo_report=False,
-            plot_traj=False,          # if you want the plot
-            prob_thresh=prob_thresh,
-            uncer_thresh=uncer_thresh,
-            optuna_mode=True,
-            base_rmse=rmse_base,
-            # add: trial_number=trial.number (optional)
-        )
+            # write incrementally (so you don’t lose progress on crash)
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w") as f:
+                json.dump(results, f, indent=2)
 
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            print(f"[OK] {tracker_name} F={feature_num} best improvement={rec['best']['objective_improvement']:.6f}")
 
-        return rmse_base - rmse 
-    except Exception:
-        return -math.inf
-
+    return results
 
 if __name__ == "__main__":
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=100)
+    trackers = [
+        "LK_SHI_TOMASI",
+        "ORB",
+        "SIFT",
+        "ORB2",
+        "BRISK",
+        "SUPERPOINT",
+    ]
+    feature_nums = [400, 1000, 2000, 3000]
 
-    print("Best RMSE:", study.best_value)
-    print("Best params:", study.best_params)
+    run_suite(
+        trackers=trackers,
+        feature_nums=feature_nums,
+        max_images=800,
+        n_trials=50,
+        out_path="results/optuna_best_params.json",
+    )
