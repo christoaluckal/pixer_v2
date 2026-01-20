@@ -57,13 +57,10 @@ class MaskLoader:
     @torch.no_grad()
     def __call__(self, mean_path, var_path) -> np.ndarray:
 
-
-        mean = np.load(mean_path)
-        var = np.load(var_path)
-
+        print(f"@@@@@@@@@@@@@@@@@@@@@@@@: {mean_path}")
         score = fscore.featureness_image(
-            torch.from_numpy(mean),
-            torch.from_numpy(var),
+            torch.from_numpy(np.load(mean_path)).float(),
+            torch.from_numpy(np.load(var_path)).float(),
             prob_thresh=self.prob_val,
             uncer_thresh=self.unc_val,
         ).numpy().squeeze()

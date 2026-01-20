@@ -490,34 +490,33 @@ def run_exp(
         wandb_run = None
 
         if not is_baseline:
-            mask_gen = SilkMaskGenerator(
-                dnn_ckpt=f"{kScriptFolder}/silk_data/dnn.ckpt",
-                uh_ckpt=f"{kScriptFolder}/silk_data/uh_mc100.ckpt",
-                prob_thresh=prob_thresh,
-                uncer_thresh=uncer_thresh,
-                device="cuda" if torch.cuda.is_available() else "cpu"
-            )
-
+            # mask_gen = SilkMaskGenerator(
+            #     dnn_ckpt=f"{kScriptFolder}/silk_data/dnn.ckpt",
+            #     uh_ckpt=f"{kScriptFolder}/silk_data/uh_mc100.ckpt",
+            #     prob_thresh=prob_thresh,
+            #     uncer_thresh=uncer_thresh,
+            #     device="cuda" if torch.cuda.is_available() else "cpu"
+            # )
             # dummy_image = f"{kScriptFolder}/silk_data/frame.png"
             # img_t = cv2.imread(dummy_image)
             # if img_t is None:
             #     raise RuntimeError(f"Could not read dummy image at {dummy_image}")
-
             # mask = mask_gen(img_t)
 
-            img_t = dataset.getImage(30)
-            mask = mask_gen(img_t)
+            
+
 
             # SILK LOAD PRECOMPUTED
-            # mask_gen = MaskLoader(
-            #     mean_location=f"{kScriptFolder}/silk_data/mean_maps/",
-            #     var_location=f"{kScriptFolder}/silk_data/var_maps/",
-            #     prob_val=prob_thresh,
-            #     unc_val=uncer_thresh,
-            #     dummy_image=img_t,
-            #     device="cuda" if torch.cuda.is_available() else "cpu"
-            # )
-            # mask = mask_gen("/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/mean/000000_mean.npy","/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/var/000000_var.npy")
+            img_t = dataset.getImage(0)
+            mask_gen = MaskLoader(
+                mean_location=f"{kScriptFolder}/silk_data/mean_maps/",
+                var_location=f"{kScriptFolder}/silk_data/var_maps/",
+                prob_val=prob_thresh,
+                unc_val=uncer_thresh,
+                dummy_image=img_t,
+                device="cuda" if torch.cuda.is_available() else "cpu"
+            )
+            mask = mask_gen("/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/mean/000000_mean.npy","/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/var/000000_var.npy")
 
 
             image_area = img_t.shape[0] * img_t.shape[1]

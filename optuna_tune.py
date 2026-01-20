@@ -85,8 +85,9 @@ class OptunaWrapper:
                 torch.cuda.empty_cache()
 
     def run_optimization(self, n_trials: int = 100, sampler_seed: int = 0):
-        sampler = optuna.samplers.TPESampler(seed=sampler_seed)
-        study = optuna.create_study(direction="maximize", sampler=sampler)
+        # sampler = optuna.samplers.TPESampler(seed=sampler_seed)
+        # study = optuna.create_study(direction="maximize", sampler=sampler)
+        study = optuna.create_study(direction="maximize")
         study.optimize(self.objective, n_trials=n_trials)
         return study
 

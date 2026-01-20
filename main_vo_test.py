@@ -447,34 +447,35 @@ def run_exp(
         os.makedirs(f'{kResultsFolder}/logs')
 
     if not is_baseline:
+        dataset_img = dataset.getImage(30)
 
         # SILK FORWARD PASS
-        # mask_gen = SilkMaskGenerator(
-        #     dnn_ckpt=f"{kScriptFolder}/silk_data/dnn.ckpt",
-        #     uh_ckpt=f"{kScriptFolder}/silk_data/uh_mc100.ckpt",
-        #     prob_thresh=prob_thresh,
-        #     uncer_thresh=uncer_thresh,
-        #     device="cuda" if torch.cuda.is_available() else "cpu"
-        # )
+        mask_gen = SilkMaskGenerator(
+            dnn_ckpt=f"{kScriptFolder}/silk_data/dnn.ckpt",
+            uh_ckpt=f"{kScriptFolder}/silk_data/uh_mc100.ckpt",
+            prob_thresh=prob_thresh,
+            uncer_thresh=uncer_thresh,
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
 
         # dummy_image = f"{kScriptFolder}/silk_data/frame.png"
         # img_t = cv2.imread(dummy_image)
-        # mask = mask_gen(img_t)
-        dataset_img = dataset.getImage(30)
+        mask = mask_gen(dataset_img)
+        
 
         # SILK LOAD PRECOMPUTED
-        mask_gen = MaskLoader(
-            mean_location=f"{kScriptFolder}/silk_data/mean_maps/",
-            var_location=f"{kScriptFolder}/silk_data/var_maps/",
-            prob_val=prob_thresh,
-            unc_val=uncer_thresh,
-            dummy_image=dataset_img,
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        )
-        mask = mask_gen("/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/mean/000000_mean.npy","/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/var/000000_var.npy")
+        # mask_gen = MaskLoader(
+        #     mean_location=f"{kScriptFolder}/silk_data/mean_maps/",
+        #     var_location=f"{kScriptFolder}/silk_data/var_maps/",
+        #     prob_val=prob_thresh,
+        #     unc_val=uncer_thresh,
+        #     dummy_image=dataset_img,
+        #     device="cuda" if torch.cuda.is_available() else "cpu"
+        # )
+        # mask = mask_gen("/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/mean/000030_mean.npy","/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/var/000030_var.npy")
+        
         img_t = dataset_img
         image_area = img_t.shape[0] * img_t.shape[1]
-
         plt.imshow(mask,cmap='jet')
         plt.draw()
         plt.pause(0)
@@ -817,8 +818,8 @@ if __name__ == "__main__":
     base_lines = [False]
 
     # probs = np.arange(0.0,1.01,0.1)
-    probs = [0.05]
-    uncers = [0.8]
+    probs = [0.071]
+    uncers = [0.087]
 
     from itertools import product
     import traceback
