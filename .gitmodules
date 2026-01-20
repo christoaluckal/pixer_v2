@@ -16,9 +16,9 @@
 [submodule "thirdparty/d2net"]
 	path = thirdparty/d2net
 	url = https://github.com/mihaidusmanu/d2-net.git
-[submodule "thirdparty/tensorflow_models"]
-	path = thirdparty/tensorflow_models
-	url = https://github.com/tensorflow/models
+# [submodule "thirdparty/tensorflow_models"]
+# 	path = thirdparty/tensorflow_models
+# 	url = https://github.com/tensorflow/models
 [submodule "thirdparty/lfnet"]
 	path = thirdparty/lfnet
 	url = https://github.com/vcg-uvic/lf-net-release.git

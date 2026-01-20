@@ -26,7 +26,10 @@ import os
 import math
 import time
 import platform
+import matplotlib
+matplotlib.use("Agg")  # must be before pyplot import
 import matplotlib.pyplot as plt
+
 from pyslam.config import Config
 
 from pyslam.slam.visual_odometry import VisualOdometryEducational
@@ -39,7 +42,7 @@ from pyslam.io.silk_masker import SilkMaskGenerator
 from pyslam.io.ground_truth import groundtruth_factory
 from pyslam.io.dataset_factory import dataset_factory
 from pyslam.io.dataset_types import DatasetType, SensorType
-
+import wandb
 from pyslam.viz.mplot_thread import Mplot2d, Mplot3d
 # from pyslam.viz.qplot_thread import Qplot2d
 from pyslam.viz.rerun_interface import Rerun
@@ -85,6 +88,96 @@ use or not pangolin (if you want to use it then you need to install it by using 
 
 import subprocess
 from pathlib import Path
+import re
+
+def _to_uint8_rgb(img: np.ndarray) -> np.ndarray:
+    """Accepts HxW, HxWx1, HxWx3 in float/uint8; returns HxWx3 uint8."""
+    if img.ndim == 2:
+        img = img[..., None]
+    if img.shape[-1] == 1:
+        img = np.repeat(img, 3, axis=-1)
+
+    if img.dtype != np.uint8:
+        # assume [0,1] or arbitrary float; robust normalize to [0,255]
+        x = img.astype(np.float32)
+        x_min, x_max = float(np.min(x)), float(np.max(x))
+        if x_max > x_min:
+            x = (x - x_min) / (x_max - x_min)
+        x = (x * 255.0).clip(0, 255)
+        img = x.astype(np.uint8)
+
+    return img
+
+def _mask_to_uint8_rgb(mask: np.ndarray) -> np.ndarray:
+    """Accepts HxW or HxWx1 mask in {0,1} or [0,1] or uint8; returns white mask on black."""
+    if mask.ndim == 3 and mask.shape[-1] == 1:
+        mask = mask[..., 0]
+    if mask.dtype != np.uint8:
+        m = mask.astype(np.float32)
+        # treat anything >0.5 as foreground if looks like probs
+        if m.max() <= 1.0:
+            m = (m > 0.5).astype(np.float32)
+        m = (m * 255.0).clip(0, 255).astype(np.uint8)
+    else:
+        # if it's 0/1, scale up
+        if mask.max() <= 1:
+            m = (mask * 255).astype(np.uint8)
+        else:
+            m = mask
+    m3 = np.stack([m, m, m], axis=-1)
+    return m3
+
+def make_1x3_grid(image: np.ndarray, mask: np.ndarray, alpha: float = 0.5) -> np.ndarray:
+    """
+    Returns a single Hx(3W)x3 uint8 image: [image | mask | overlay].
+    overlay = image*(1-alpha) + mask_color*alpha (mask shown in green).
+    """
+    img = _to_uint8_rgb(image)
+    m3 = _mask_to_uint8_rgb(mask)
+
+    # green mask color (only where mask is on)
+    green = np.zeros_like(img)
+    green[..., 1] = m3[..., 0]  # use mask intensity as green channel
+
+    overlay = (img.astype(np.float32) * (1 - alpha) + green.astype(np.float32) * alpha).clip(0, 255).astype(np.uint8)
+
+    # concat horizontally
+    grid = np.concatenate([img, m3, overlay], axis=1)
+    return grid
+
+
+def extract_xz(poses):
+    """
+    poses: list or np.ndarray of shape (N, 7)
+    returns: (N, 2) array [x, z]
+    """
+    poses = np.asarray(poses)
+    # x = poses[:, 0]
+    # z = poses[:, 2]
+    x = poses[:, 3]
+    z = poses[:, 11]
+    return x, z
+
+def make_xz_traj_figure(evo_cands, evo_gts, title=None):
+    x_est, z_est = extract_xz(evo_cands)
+    x_gt,  z_gt  = extract_xz(evo_gts)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    ax.plot(x_gt, z_gt, label="GT", linewidth=2)
+    ax.plot(x_est, z_est, label="Est", linewidth=1)
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Z")
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True)
+    ax.legend()
+
+    if title is not None:
+        ax.set_title(title)
+
+    return fig
+
 
 def factory_plot2d(*args, **kwargs):
     if kVisualize:
@@ -94,67 +187,32 @@ def factory_plot2d(*args, **kwargs):
             return Mplot2d(*args, **kwargs)
     else:
         return None
-    
-def run_evo(cmd, cwd=None):
-    env = os.environ.copy()
-    env["MPLBACKEND"] = "Agg"
-    subprocess.run(cmd, check=True, cwd=cwd, env=env)
-    
-def generate_evo_report(evo_cand, evo_gt, out_dir="evo_report", monocular=False, rpe_delta=1, orientation="xz"):
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
-    est = evo_cand
-    gt = evo_gt
-    
-    # common flags
+def evo_ape_rmse_kitti(est_path, gt_path, monocular=False) -> float:
+    """
+    Runs evo_ape kitti and returns the 'rmse' value from its stdout.
+    """
     align = ["-a"]
     if monocular:
         align += ["--correct_scale"]
 
-    # APE
-    run_evo([
-        "evo_ape", "kitti", str(gt), str(est),
-        *align,
-        "--save_results", str(out_dir / "ape.zip"),
-        "--save_plot", str(out_dir / "ape.png"),
-    ])
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
 
-    # RPE (per-frame by default; can change delta)
-    run_evo([
-        "evo_rpe", "kitti", str(gt), str(est),
-        *align,
-        "--delta", str(rpe_delta),
-        "--save_results", str(out_dir / "rpe.zip"),
-        "--save_plot", str(out_dir / "rpe.png"),
-    ])
-
-    # Trajectory overlay (saved only)
-    run_evo([
-        "evo_traj", "kitti", str(gt), str(est),
-        "--plot_mode", orientation,
-        "--save_plot", str(out_dir / f"traj_{orientation}.png"),
-    ])
-
-    # Also save stdout tables (nice for quick diff/grep)
-    (out_dir / "ape.txt").write_text(
-        subprocess.check_output(
-            ["evo_ape", "kitti", str(gt), str(est), *align],
-            env={**os.environ, "MPLBACKEND": "Agg"},
-            text=True
-        )
-    )
-    (out_dir / "rpe.txt").write_text(
-        subprocess.check_output(
-            ["evo_rpe", "kitti", str(gt), str(est), *align,
-             "--delta", str(rpe_delta)],
-            env={**os.environ, "MPLBACKEND": "Agg"},
-            text=True
-        )
+    # capture stdout so we can parse rmse
+    out = subprocess.check_output(
+        ["evo_ape", "kitti", str(gt_path), str(est_path), *align],
+        env=env,
+        text=True,
+        stderr=subprocess.STDOUT,
     )
 
-    return out_dir
-
+    # evo prints a table that includes a line like: "rmse 0.1234"
+    m = re.search(r"^\s*rmse\s+([0-9]*\.?[0-9]+([eE][-+]?\d+)?)\s*$", out, re.MULTILINE)
+    if not m:
+        raise RuntimeError(f"Could not parse rmse from evo_ape output.\n--- evo_ape output ---\n{out}")
+    return float(m.group(1))
+    
 
 def process_data(results: dict, 
                  images=None,
@@ -398,6 +456,8 @@ def run_exp(
         plot_traj: bool = False,
         prob_thresh: float = 0.0,
         uncer_thresh: float = 0.1,
+        optuna_mode: bool = False,
+        base_rmse: float = None,
         ):
     
     if os.environ.get('PYSLAM_CONFIG') is None:
@@ -411,354 +471,464 @@ def run_exp(
     else:
         # exp_name = f'{exp_name}_#{feature_name}#_@{feature_num}@'
         pass
+
+    wandb_run = None
+    try:
+       
     
-    config = Config()
+        config = Config()
 
-    dataset = dataset_factory(config)
+        dataset = dataset_factory(config)
 
-    mask_gen = None
+        mask_gen = None
 
-    if not os.path.exists(f'{kResultsFolder}/logs'):
-        os.makedirs(f'{kResultsFolder}/logs')
-
-    if not is_baseline:
-        mask_gen = SilkMaskGenerator(
-            dnn_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/dnn.ckpt",
-            uh_ckpt="/home/christoa/Developer/pixer/pixer_v2/silk_data/uh_mc100.ckpt",
-            prob_thresh=prob_thresh,
-            uncer_thresh=uncer_thresh,
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        )
-
-        dummy_image = '/home/christoa/Developer/pixer/pixer_v2/silk_data/frame.png'
-        img_t = cv2.imread(dummy_image)
-        mask = mask_gen(img_t)
-
-
-        image_area = img_t.shape[0] * img_t.shape[1]
-        non_zero_area = np.sum(mask > 0)
-        cv2.imwrite(f'{kResultsFolder}/logs/{exp_name}_sample_mask.png', mask*255)
-        if non_zero_area / image_area < 0.01:
-            Printer.yellow(f"[Warning] The generated mask has very few features ({non_zero_area}/{image_area} = {non_zero_area/image_area*100:.4f}%) with prob_thresh={prob_thresh}, uncer_thresh={uncer_thresh}.")
-            raise ValueError("The generated mask has very few features. Please adjust the thresholds.")
-        elif non_zero_area / image_area > 0.99:
-            Printer.yellow(f"[Warning] The generated mask has almost all features ({non_zero_area}/{image_area} = {non_zero_area/image_area*100:.2f}%) with prob_thresh={prob_thresh}, uncer_thresh={uncer_thresh}.")
-        else:
-            Printer.green(f"The generated mask has {non_zero_area}/{image_area} = {non_zero_area/image_area*100:.2f}% features")
-            
-        # ADD MASKING GENERATOR
-        dataset.set_mask_generator(mask_gen)
-
-    groundtruth = groundtruth_factory(config.dataset_settings)
-
-    cam = PinholeCamera(config)
-
-    # num_features = 2000  # how many features do you want to detect and track?
-    num_features = feature_num
-    # if (
-    #     config.num_features_to_extract > 0
-    # ):  # override the number of features to extract if we set something in the settings file
-    #     num_features = config.num_features_to_extract
-
-    # select your tracker configuration (see the file feature_tracker_configs.py)
-    # LK_SHI_TOMASI, LK_FAST
-    # SHI_TOMASI_ORB, FAST_ORB, ORB, BRISK, AKAZE, FAST_FREAK, SIFT, ROOT_SIFT, SURF, SUPERPOINT, LIGHTGLUE, XFEAT, XFEAT_XFEAT, LOFTR
-
-    if feature_type == FeatureTrackerConfigs.LK_SHI_TOMASI:
-        tracker_config = FeatureTrackerConfigs.LK_SHI_TOMASI
-        tracker_config["num_features"] = num_features
-    else:
-        tracker_config = feature_type
-        tracker_config["num_features"] = num_features
-
-    feature_tracker = feature_tracker_factory(**tracker_config)
-
-    if save_intermediate:
-        save_loc = kResultsFolder
-    else:
-        save_loc = None
-
-    # create visual odometry object
-    if dataset.sensor_type == SensorType.RGBD:
-        vo = VisualOdometryRgbdTensor(cam, groundtruth)  # only for RGBD
-        Printer.green("Using VisualOdometryRgbdTensor")
-    else:
-        vo = VisualOdometryEducational(cam, groundtruth, feature_tracker)
-        Printer.green("Using VisualOdometryEducational")
-    time.sleep(1)  # time to read the message
-
-    is_draw_traj_img = True
-    traj_img_size = 800
-    traj_img = np.zeros((traj_img_size, traj_img_size, 3), dtype=np.uint8)
-    half_traj_img_size = int(0.5 * traj_img_size)
-    draw_scale = 1
-
-    plt3d = None
-
-    viewer3D = None
-
-    is_draw_3d = True
-    is_draw_with_rerun = kUseRerun
-    
-    matched_points_plt = None
-    err_plt = None
-    if kVisualize:
-        if is_draw_with_rerun:
-            Rerun.init_vo()
-        else:
-            if kUsePangolin:
-                # viewer3D = Viewer3D(scale=dataset.scale_viewer_3d * 10)
-                pass
-            else:
-                plt3d = Mplot3d(title="3D trajectory")
-
-        is_draw_err = True
-        err_plt = factory_plot2d(xlabel="img id", ylabel="m", title="error")
-
-        is_draw_matched_points = True
-        matched_points_plt = factory_plot2d(xlabel="img id", ylabel="# matches", title="# matches")
-
-    img_id = 0
-
-    # Lists for processing
-    matched_kps = []
-    num_inliers = []
-    px_shifts = []
-    rs = []
-    ts = []
-    kps = []
-    des = []
-    xs = []
-    ys = []
-    zs = []
-    gtxs = []
-    gtys = []
-    gtzs = []
-    img_id = 0
-    images = []
-    original_kps = []
-    masked_kps = []
-    est_times = []
-    evo_cands = []
-    evo_gts = []
-
-    loop_start_time = time.perf_counter()
-    while True:
-        if img_id >= max_images-1 and max_images > 0:
-            break
-        img = None
-        mask = None
+        if not os.path.exists(f'{kResultsFolder}/logs'):
+            os.makedirs(f'{kResultsFolder}/logs')
 
         
 
-        if dataset.is_ok:
-            timestamp = dataset.getTimestamp()  # get current timestamp
-            # img = dataset.getImageColor(img_id)
-            img, mask = dataset.getImageColorAndMask(img_id)
-            depth = dataset.getDepth(img_id)
-            img_right = (
-                dataset.getImageColorRight(img_id)
-                if dataset.sensor_type == SensorType.STEREO
-                else None
+        wandb_run = None
+
+        if not is_baseline:
+            mask_gen = SilkMaskGenerator(
+                dnn_ckpt=f"{kScriptFolder}/silk_data/dnn.ckpt",
+                uh_ckpt=f"{kScriptFolder}/silk_data/uh_mc100.ckpt",
+                prob_thresh=prob_thresh,
+                uncer_thresh=uncer_thresh,
+                device="cuda" if torch.cuda.is_available() else "cpu"
             )
 
-        if img is not None:
-            if img_id == 1:
-                cv2.imwrite("silk_data/frame.png", img)
-            matched_kp, num_inlier, px_shift, kp_cur, des_cur,rot,trans, kp_before, kp_after, est_time = vo.track(img, img_right, depth, img_id, timestamp, vo_mask=mask)  # main VO function
-            if matched_kp is not None:
-                images.append(img)
-                matched_kps.append(matched_kp)
-                num_inliers.append(num_inlier)
-                px_shifts.append(px_shift)
-                kps.append(kp_cur)
-                des.append(des_cur)
-                rs.append(rot)
-                ts.append(trans)
-                original_kps.append(kp_before)
-                masked_kps.append(kp_after)
-                est_times.append(est_time)
+            dummy_image = f"{kScriptFolder}/silk_data/frame.png"
+            img_t = cv2.imread(dummy_image)
+            if img_t is None:
+                raise RuntimeError(f"Could not read dummy image at {dummy_image}")
 
-            if (
-                len(vo.traj3d_est) > 1
-            ):  # start drawing from the third image (when everything is initialized and flows in a normal way)
+            mask = mask_gen(img_t)
 
-                x, y, z = vo.traj3d_est[-1]
-                gt_x, gt_y, gt_z = vo.traj3d_gt[-1]
+            image_area = img_t.shape[0] * img_t.shape[1]
+            non_zero_area = int(np.sum(mask > 0))
+            frac = non_zero_area / float(image_area)
 
-                est = vo.evo_cand[-1]
-                gt = vo.evo_gt[-1]
+            if frac < 0.01:
+                dummy_ok = False
+                dummy_reason = f"too_few_features frac={frac:.6f}"
+                Printer.yellow(
+                    f"[Dummy FAIL] too few features ({non_zero_area}/{image_area}={frac*100:.4f}%) "
+                    f"p={prob_thresh}, u={uncer_thresh}"
+                )
+                raise ValueError("Dummy mask test failed: too few features.")
+            elif frac > 0.90:
+                dummy_ok = False
+                dummy_reason = f"too_many_features frac={frac:.6f}"
+                Printer.yellow(
+                    f"[Dummy FAIL] too many features ({non_zero_area}/{image_area}={frac*100:.2f}%) "
+                    f"p={prob_thresh}, u={uncer_thresh}"
+                )
+                # If you want to *allow* this case, delete the next line.
+                raise ValueError("Dummy mask test failed: mask too dense.")
 
-                xs.append(x)
-                ys.append(y)
-                zs.append(z)
-                gtxs.append(gt_x)
-                gtys.append(gt_y)
-                gtzs.append(gt_z)
+            # Dummy passed: apply mask generator
+            dataset.set_mask_generator(mask_gen)
 
-                evo_cands.append(est)
-                evo_gts.append(gt)
+            # ✅ ONLY NOW start W&B (and only in optuna mode)
+            if optuna_mode:
+                wandb_run = wandb.init(
+                    project="pixerv2_vo_optuna",
+                    entity="droneslab",
+                    name=exp_name,
+                    group="optuna",
+                    job_type="trial",
+                    reinit=True,
+                    config={
+                        "feature_name": feature_name,
+                        "feature_num": feature_num,
+                        "prob_thresh": prob_thresh,
+                        "uncer_thresh": uncer_thresh,
+                        "is_baseline": is_baseline,
+                    },
+                )
 
-                if kVisualize:
-
-                    if is_draw_traj_img:  # draw 2D trajectory (on the plane xz)
-                        draw_x, draw_y = int(
-                            draw_scale * x
-                        ) + half_traj_img_size, half_traj_img_size - int(draw_scale * z)
-                        draw_gt_x, draw_gt_y = int(
-                            draw_scale * gt_x
-                        ) + half_traj_img_size, half_traj_img_size - int(draw_scale * gt_z)
-                        cv2.circle(
-                            traj_img,
-                            (draw_x, draw_y),
-                            1,
-                            (img_id * 255 / 4540, 255 - img_id * 255 / 4540, 0),
-                            1,
-                        )  # estimated from green to blue
-                        cv2.circle(
-                            traj_img, (draw_gt_x, draw_gt_y), 1, (0, 0, 255), 1
-                        )  # groundtruth in red
-                        # write text on traj_img
-                        cv2.rectangle(traj_img, (10, 20), (600, 60), (0, 0, 0), -1)
-                        text = "Coordinates: x=%2fm y=%2fm z=%2fm" % (x, y, z)
-                        cv2.putText(
-                            traj_img,
-                            text,
-                            (20, 40),
-                            cv2.FONT_HERSHEY_PLAIN,
-                            1,
-                            (255, 255, 255),
-                            1,
-                            8,
-                        )
-                        # show
-
-                        if is_draw_with_rerun:
-                            Rerun.log_img_seq("trajectory_img/2d", img_id, traj_img)
-                        else:
-                            cv2.imshow("Trajectory", traj_img)
-
-                    if is_draw_with_rerun:
-                        Rerun.log_2d_seq_scalar("trajectory_error/err_x", img_id, math.fabs(gt_x - x))
-                        Rerun.log_2d_seq_scalar("trajectory_error/err_y", img_id, math.fabs(gt_y - y))
-                        Rerun.log_2d_seq_scalar("trajectory_error/err_z", img_id, math.fabs(gt_z - z))
-
-                        Rerun.log_2d_seq_scalar(
-                            "trajectory_stats/num_matches", img_id, vo.num_matched_kps
-                        )
-                        Rerun.log_2d_seq_scalar("trajectory_stats/num_inliers", img_id, vo.num_inliers)
-
-                        Rerun.log_3d_camera_img_seq(img_id, vo.draw_img, None, cam, vo.poses[-1])
-                        Rerun.log_3d_trajectory(img_id, vo.traj3d_est, "estimated", color=[0, 0, 255])
-                        Rerun.log_3d_trajectory(img_id, vo.traj3d_gt, "ground_truth", color=[255, 0, 0])
-                    else:
-                        if is_draw_3d:  # draw 3d trajectory
-                            plt3d.draw(vo.traj3d_gt, "ground truth", color="r", marker=".")
-                            plt3d.draw(vo.traj3d_est, "estimated", color="g", marker=".")
-
-                        if is_draw_err:  # draw error signals
-                            errx = [img_id, math.fabs(gt_x - x)]
-                            erry = [img_id, math.fabs(gt_y - y)]
-                            errz = [img_id, math.fabs(gt_z - z)]
-                            err_plt.draw(errx, "err_x", color="g")
-                            err_plt.draw(erry, "err_y", color="b")
-                            err_plt.draw(errz, "err_z", color="r")
-
-                        if is_draw_matched_points:
-                            matched_kps_signal = [img_id, vo.num_matched_kps]
-                            inliers_signal = [img_id, vo.num_inliers]
-                            matched_points_plt.draw(matched_kps_signal, "# matches", color="b")
-                            matched_points_plt.draw(inliers_signal, "# inliers", color="g")
-
-            # draw camera image
-            if not is_draw_with_rerun and kVisualize:
-                cv2.imshow("Camera", vo.draw_img)
+                log_img = make_1x3_grid(img_t, mask)
+                wandb.log({
+                    "qual/dummy_grid": wandb.Image(
+                        log_img,
+                        caption=f"Dummy mask p={prob_thresh:.3f}, u={uncer_thresh:.3f}, frac={frac:.3%}"
+                    )
+                })
 
         else:
-            print("End of dataset reached or error in reading data.")
-            break
+            # baseline: no mask_gen
+            pass
 
-        # get keys
-        key = matched_points_plt.get_key() if matched_points_plt is not None else None
-        if key == "" or key is None:
-            key = err_plt.get_key() if err_plt is not None else None
-        if key == "" or key is None:
-            key = plt3d.get_key() if plt3d is not None else None
+        groundtruth = groundtruth_factory(config.dataset_settings)
 
-        # press 'q' to exit!
+        cam = PinholeCamera(config)
+
+        # num_features = 2000  # how many features do you want to detect and track?
+        num_features = feature_num
+        # if (
+        #     config.num_features_to_extract > 0
+        # ):  # override the number of features to extract if we set something in the settings file
+        #     num_features = config.num_features_to_extract
+
+        # select your tracker configuration (see the file feature_tracker_configs.py)
+        # LK_SHI_TOMASI, LK_FAST
+        # SHI_TOMASI_ORB, FAST_ORB, ORB, BRISK, AKAZE, FAST_FREAK, SIFT, ROOT_SIFT, SURF, SUPERPOINT, LIGHTGLUE, XFEAT, XFEAT_XFEAT, LOFTR
+
+        if feature_type == FeatureTrackerConfigs.LK_SHI_TOMASI:
+            tracker_config = FeatureTrackerConfigs.LK_SHI_TOMASI
+            tracker_config["num_features"] = num_features
+        else:
+            tracker_config = feature_type
+            tracker_config["num_features"] = num_features
+
+        feature_tracker = feature_tracker_factory(**tracker_config)
+
+        if save_intermediate:
+            save_loc = kResultsFolder
+        else:
+            save_loc = None
+
+        # create visual odometry object
+        if dataset.sensor_type == SensorType.RGBD:
+            vo = VisualOdometryRgbdTensor(cam, groundtruth)  # only for RGBD
+            Printer.green("Using VisualOdometryRgbdTensor")
+        else:
+            vo = VisualOdometryEducational(cam, groundtruth, feature_tracker)
+            Printer.green("Using VisualOdometryEducational")
+        time.sleep(1)  # time to read the message
+
+        is_draw_traj_img = True
+        traj_img_size = 800
+        traj_img = np.zeros((traj_img_size, traj_img_size, 3), dtype=np.uint8)
+        half_traj_img_size = int(0.5 * traj_img_size)
+        draw_scale = 1
+
+        plt3d = None
+
+        viewer3D = None
+
+        is_draw_3d = True
+        is_draw_with_rerun = kUseRerun
+        
+        matched_points_plt = None
+        err_plt = None
         if kVisualize:
-            key_cv = cv2.waitKey(1) & 0xFF
-            if key == "q" or (key_cv == ord("q")):
-                break
-            if viewer3D and viewer3D.is_closed():
-                break
-        img_id += 1
+            if is_draw_with_rerun:
+                Rerun.init_vo()
+            else:
+                if kUsePangolin:
+                    # viewer3D = Viewer3D(scale=dataset.scale_viewer_3d * 10)
+                    pass
+                else:
+                    plt3d = Mplot3d(title="3D trajectory")
 
-    # print('press a key in order to exit...')
-    # cv2.waitKey(0)
-    if kVisualize:
-        if is_draw_traj_img:
-            if not os.path.exists(kResultsFolder):
-                os.makedirs(kResultsFolder, exist_ok=True)
-            print(f"saving {kResultsFolder}/map.png")
-            cv2.imwrite(f"{kResultsFolder}/map.png", traj_img)
-        if plt3d:
-            plt3d.quit()
-        if viewer3D:
-            viewer3D.quit()
-        if err_plt:
-            err_plt.quit()
-        if matched_points_plt:
-            matched_points_plt.quit()
+            is_draw_err = True
+            err_plt = factory_plot2d(xlabel="img id", ylabel="m", title="error")
 
-        cv2.destroyAllWindows()
+            is_draw_matched_points = True
+            matched_points_plt = factory_plot2d(xlabel="img id", ylabel="# matches", title="# matches")
+
+        img_id = 0
+
+        # Lists for processing
+        matched_kps = []
+        num_inliers = []
+        px_shifts = []
+        rs = []
+        ts = []
+        kps = []
+        des = []
+        xs = []
+        ys = []
+        zs = []
+        gtxs = []
+        gtys = []
+        gtzs = []
+        img_id = 0
+        images = []
+        original_kps = []
+        masked_kps = []
+        est_times = []
+        evo_cands = []
+        evo_gts = []
+
+        loop_start_time = time.perf_counter()
+        while True:
+            if img_id >= max_images-1 and max_images > 0:
+                break
+            img = None
+            mask = None
+
+            
+
+            if dataset.is_ok:
+                timestamp = dataset.getTimestamp()  # get current timestamp
+                # img = dataset.getImageColor(img_id)
+                img, mask = dataset.getImageColorAndMask(img_id)
+                depth = dataset.getDepth(img_id)
+                img_right = (
+                    dataset.getImageColorRight(img_id)
+                    if dataset.sensor_type == SensorType.STEREO
+                    else None
+                )
+
+            if img is not None:
+                if img_id == 1:
+                    cv2.imwrite("silk_data/frame.png", img)
+                matched_kp, num_inlier, px_shift, kp_cur, des_cur,rot,trans, kp_before, kp_after, est_time = vo.track(img, img_right, depth, img_id, timestamp, vo_mask=mask)  # main VO function
+                if matched_kp is not None:
+                    images.append(img)
+                    matched_kps.append(matched_kp)
+                    num_inliers.append(num_inlier)
+                    px_shifts.append(px_shift)
+                    kps.append(kp_cur)
+                    des.append(des_cur)
+                    rs.append(rot)
+                    ts.append(trans)
+                    original_kps.append(kp_before)
+                    masked_kps.append(kp_after)
+                    est_times.append(est_time)
+
+                if (
+                    len(vo.traj3d_est) > 1
+                ):  # start drawing from the third image (when everything is initialized and flows in a normal way)
+
+                    x, y, z = vo.traj3d_est[-1]
+                    gt_x, gt_y, gt_z = vo.traj3d_gt[-1]
+
+                    est = vo.evo_cand[-1]
+                    gt = vo.evo_gt[-1]
+
+                    xs.append(x)
+                    ys.append(y)
+                    zs.append(z)
+                    gtxs.append(gt_x)
+                    gtys.append(gt_y)
+                    gtzs.append(gt_z)
+
+                    evo_cands.append(est)
+                    evo_gts.append(gt)
+
+                    if kVisualize:
+
+                        if is_draw_traj_img:  # draw 2D trajectory (on the plane xz)
+                            draw_x, draw_y = int(
+                                draw_scale * x
+                            ) + half_traj_img_size, half_traj_img_size - int(draw_scale * z)
+                            draw_gt_x, draw_gt_y = int(
+                                draw_scale * gt_x
+                            ) + half_traj_img_size, half_traj_img_size - int(draw_scale * gt_z)
+                            cv2.circle(
+                                traj_img,
+                                (draw_x, draw_y),
+                                1,
+                                (img_id * 255 / 4540, 255 - img_id * 255 / 4540, 0),
+                                1,
+                            )  # estimated from green to blue
+                            cv2.circle(
+                                traj_img, (draw_gt_x, draw_gt_y), 1, (0, 0, 255), 1
+                            )  # groundtruth in red
+                            # write text on traj_img
+                            cv2.rectangle(traj_img, (10, 20), (600, 60), (0, 0, 0), -1)
+                            text = "Coordinates: x=%2fm y=%2fm z=%2fm" % (x, y, z)
+                            cv2.putText(
+                                traj_img,
+                                text,
+                                (20, 40),
+                                cv2.FONT_HERSHEY_PLAIN,
+                                1,
+                                (255, 255, 255),
+                                1,
+                                8,
+                            )
+                            # show
+
+                            if is_draw_with_rerun:
+                                Rerun.log_img_seq("trajectory_img/2d", img_id, traj_img)
+                            else:
+                                cv2.imshow("Trajectory", traj_img)
+
+                        if is_draw_with_rerun:
+                            Rerun.log_2d_seq_scalar("trajectory_error/err_x", img_id, math.fabs(gt_x - x))
+                            Rerun.log_2d_seq_scalar("trajectory_error/err_y", img_id, math.fabs(gt_y - y))
+                            Rerun.log_2d_seq_scalar("trajectory_error/err_z", img_id, math.fabs(gt_z - z))
+
+                            Rerun.log_2d_seq_scalar(
+                                "trajectory_stats/num_matches", img_id, vo.num_matched_kps
+                            )
+                            Rerun.log_2d_seq_scalar("trajectory_stats/num_inliers", img_id, vo.num_inliers)
+
+                            Rerun.log_3d_camera_img_seq(img_id, vo.draw_img, None, cam, vo.poses[-1])
+                            Rerun.log_3d_trajectory(img_id, vo.traj3d_est, "estimated", color=[0, 0, 255])
+                            Rerun.log_3d_trajectory(img_id, vo.traj3d_gt, "ground_truth", color=[255, 0, 0])
+                        else:
+                            if is_draw_3d:  # draw 3d trajectory
+                                plt3d.draw(vo.traj3d_gt, "ground truth", color="r", marker=".")
+                                plt3d.draw(vo.traj3d_est, "estimated", color="g", marker=".")
+
+                            if is_draw_err:  # draw error signals
+                                errx = [img_id, math.fabs(gt_x - x)]
+                                erry = [img_id, math.fabs(gt_y - y)]
+                                errz = [img_id, math.fabs(gt_z - z)]
+                                err_plt.draw(errx, "err_x", color="g")
+                                err_plt.draw(erry, "err_y", color="b")
+                                err_plt.draw(errz, "err_z", color="r")
+
+                            if is_draw_matched_points:
+                                matched_kps_signal = [img_id, vo.num_matched_kps]
+                                inliers_signal = [img_id, vo.num_inliers]
+                                matched_points_plt.draw(matched_kps_signal, "# matches", color="b")
+                                matched_points_plt.draw(inliers_signal, "# inliers", color="g")
+
+                # draw camera image
+                if not is_draw_with_rerun and kVisualize:
+                    cv2.imshow("Camera", vo.draw_img)
+
+            else:
+                print("End of dataset reached or error in reading data.")
+                break
+
+            # get keys
+            key = matched_points_plt.get_key() if matched_points_plt is not None else None
+            if key == "" or key is None:
+                key = err_plt.get_key() if err_plt is not None else None
+            if key == "" or key is None:
+                key = plt3d.get_key() if plt3d is not None else None
+
+            # press 'q' to exit!
+            if kVisualize:
+                key_cv = cv2.waitKey(1) & 0xFF
+                if key == "q" or (key_cv == ord("q")):
+                    break
+                if viewer3D and viewer3D.is_closed():
+                    break
+            img_id += 1
+
+        # print('press a key in order to exit...')
+        # cv2.waitKey(0)
+        if kVisualize:
+            if is_draw_traj_img:
+                if not os.path.exists(kResultsFolder):
+                    os.makedirs(kResultsFolder, exist_ok=True)
+                print(f"saving {kResultsFolder}/map.png")
+                cv2.imwrite(f"{kResultsFolder}/map.png", traj_img)
+            if plt3d:
+                plt3d.quit()
+            if viewer3D:
+                viewer3D.quit()
+            if err_plt:
+                err_plt.quit()
+            if matched_points_plt:
+                matched_points_plt.quit()
+
+            cv2.destroyAllWindows()
+        
+        loop_end_time = time.perf_counter()
+        total_loop_time = loop_end_time - loop_start_time
+
+        results = {
+            'exp_name': exp_name,
+            'feature_name': feature_name,
+            'matched_kps': matched_kps,
+            'num_inliers': num_inliers,
+            'px_shifts': px_shifts,
+            'rs': rs,
+            'ts': ts,
+            'kps': kps,
+            'des': des,
+            'xs': xs,
+            'ys': ys,
+            'zs': zs,
+            'gtxs': gtxs,
+            'gtys': gtys,
+            'gtzs': gtzs,
+            'original_kps': original_kps,
+            'masked_kps': masked_kps,
+            'est_times': est_times,
+            'evo_cands': evo_cands,
+            'evo_gts': evo_gts,
+            'total_loop_time': total_loop_time,
+            'prob_thresh': prob_thresh,
+            'uncer_thresh': uncer_thresh,
+        }
+
+        original_kps = np.around(results['matched_kps'], decimals=2)
+        masked_kps = np.around(results['num_inliers'], decimals=2)
+        kp_reduction = (1 - (np.array(masked_kps) / np.array(original_kps))) * 100.0
+        est_time = np.around(results['est_times'], decimals=4)
+        loop_time = np.around(results['total_loop_time'], decimals=2)
+
+        # wandb.log({
+        #     "avg_original_kps": original_kps,
+        #     "avg_masked_kps": masked_kps,
+        #     "kp_reduction_%": kp_reduction,
+        #     "avg_est_time_per_frame": est_time,
+        #     "total_loop_time": loop_time,
+        # })
+        if optuna_mode and wandb_run is not None:
+            wandb.log({'base_rmse': base_rmse})
+            wandb.log({
+                "avg_original_kps": np.mean(original_kps)})
+            wandb.log({
+                "avg_masked_kps": np.mean(masked_kps)})
+            wandb.log({
+                "kp_reduction_%": np.mean(kp_reduction)})
+            wandb.log({
+                "avg_est_time_per_frame": np.mean(est_time)})
+            wandb.log({
+                "total_loop_time": loop_time})
+
+        # process_data(results, images=images, masks=images, draw_tracks=plot_tracks, plot_traj=plot_traj, traj_skips=20)
+        run_folder = os.path.join(kResultsFolder, exp_name)
+        os.makedirs(run_folder, exist_ok=True)
+
+        # Always write the KITTI trajectories needed by evo_ape
+        est_path = f"{run_folder}/{exp_name}_evo_cands.txt"
+        gt_path  = f"{run_folder}/{exp_name}_evo_gts.txt"
+        np.savetxt(est_path, np.array(results["evo_cands"]), fmt="%.9f")
+        np.savetxt(gt_path,  np.array(results["evo_gts"]),  fmt="%.9f")
+
+        # Compute evo RMSE (this is your Optuna objective)
+        rmse = evo_ape_rmse_kitti(est_path, gt_path, monocular=True)
+
+        if optuna_mode:
+            wandb.log({"rmse_diff": base_rmse - rmse})
+
+        # If NOT in optuna mode, keep your existing processing/reporting
+        if not optuna_mode:
+            process_data(
+                results,
+                images=images,
+                masks=images,
+                save_evo_report=save_evo_report,
+                save_pkl=save_pkl,
+                draw_tracks=plot_tracks,
+                plot_traj=plot_traj,
+                traj_skips=20,
+            )
+        if optuna_mode:
+            wandb.log({"evo_ape_rmse": rmse})
+
+        if wandb_run is not None:
+            fig = make_xz_traj_figure(results["evo_cands"], results["evo_gts"], title=exp_name)
+            wandb.log({"trajectory_xz": wandb.Image(fig)})
+            plt.close(fig)
+    except Exception as e:
+        Printer.red(f"[Error] Experiment {exp_name} failed with error: {e}")
+        traceback.print_exc()
+        rmse = float('inf')
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish()
+
+    return rmse
+
     
-    loop_end_time = time.perf_counter()
-    total_loop_time = loop_end_time - loop_start_time
-
-    results = {
-        'exp_name': exp_name,
-        'feature_name': feature_name,
-        'matched_kps': matched_kps,
-        'num_inliers': num_inliers,
-        'px_shifts': px_shifts,
-        'rs': rs,
-        'ts': ts,
-        'kps': kps,
-        'des': des,
-        'xs': xs,
-        'ys': ys,
-        'zs': zs,
-        'gtxs': gtxs,
-        'gtys': gtys,
-        'gtzs': gtzs,
-        'original_kps': original_kps,
-        'masked_kps': masked_kps,
-        'est_times': est_times,
-        'evo_cands': evo_cands,
-        'evo_gts': evo_gts,
-        'total_loop_time': total_loop_time,
-        'prob_thresh': prob_thresh,
-        'uncer_thresh': uncer_thresh,
-    }
-
-
-
-    # process_data(results, images=images, masks=images, draw_tracks=plot_tracks, plot_traj=plot_traj, traj_skips=20)
-    process_data(
-        results, 
-        images=images, 
-        masks=images, 
-        save_evo_report=save_evo_report,
-        save_pkl=save_pkl,
-        draw_tracks=plot_tracks, 
-        plot_traj=plot_traj, 
-        traj_skips=20
-    )
 
 if __name__ == "__main__":
 
-    max_images = 700
+    max_images = 800
 
     # LK_SHI_TOMASI,LK_FAST, ORB, SIFT, AKAZE SHI_TOMASI_ORB, SHI_TOMASI_FREAK, FAST_ORB, FAST_FREAK, ORB2, BRISK, BRISK_TFEAT, KAZE, ROOT_SIFT, SUPERPOINT, XFEAT, XFEAT_XFEAT, XFEAT_LIGHTGLUE, LIGHTGLUE, LIGHTGLUE_DISK, LIGHTGLUE_ALIKED, LIGHTGLUESIFT, DELF, D2NET, R2D2, LFNET, CONTEXTDESC, KEYNET, DISK, ALIKED, KEYNETAFFNETHARDNET, ORB2_FREAK, ORB2_BEBLID, ORB2_HARDNET, ORB2_SOSNET, ORB2_L2NET
 
@@ -802,9 +972,7 @@ if __name__ == "__main__":
 
     ]
 
-    FEATURE_TRACKER_PRESETS = FEATURE_TRACKER_PRESETS[::-1]
-
-    max_features = [1000, 2000]
+    max_features = [100,400,500, 1000, 2000]
     base_lines = [False]
 
     probs = np.arange(0.0,1.01,0.1)
@@ -818,6 +986,7 @@ if __name__ == "__main__":
     experiments = baselines + experiments
 
     import random
+    import gc
     random.shuffle(experiments)
 
     # for (feature_name, feature_type), max_f, is_baseline in experiments:
@@ -838,11 +1007,21 @@ if __name__ == "__main__":
                 uncer_thresh=uncer_thresh,
             )
 
+            # garbage collection and torch cache clearing
+            
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         except Exception as e:
             print(f"Experiment {exp_name} failed with exception: {e}")
             tb = traceback.format_exc()
             with open(f'{kResultsFolder}/{exp_name}_error.txt', 'w') as f:
                 f.write(tb)
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             continue
 
     # run_exp(
