@@ -1,4 +1,5 @@
 from silk.icra25.featureness import *
+from pyslam.io.silk_masker import load_images_fixed
 import torch
 import numpy as np
 # %matplotlib inline
@@ -32,7 +33,7 @@ imgs = sorted([os.path.join(img_dir, f) for f in os.listdir(img_dir) if f.endswi
 
 for frame_loc in tqdm(imgs[:1600]):
 
-    img_left = load_images(frame_loc)
+    img_left = load_images_fixed(frame_loc)
     if img_left.ndim != 4 or img_left.shape[0] != 1 or img_left.shape[1] != 1:
         raise ValueError(
             f"Expected input shape (1,1,H,W), got {tuple(img_left.shape)}"

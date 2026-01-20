@@ -7,6 +7,17 @@ from silk.icra25.featureness import SiLKDNNUncertainty  # adjust to what you act
 import matplotlib.pyplot as plt
 import os
 
+def load_images_fixed(*paths, as_gray=True):
+    images = np.stack([cv2.imread(path, 0) for path in paths])/255.0
+    images = torch.tensor(images, device=DEVICE, dtype=torch.float32)
+    if not as_gray:
+        images = images.permute(0, 3, 1, 2)
+        images = images / 255.0
+    else:
+        images = images.unsqueeze(1)  # add channel dimension
+    return images
+
+
 class SilkMaskGenerator:
     def __init__(self, dnn_ckpt, uh_ckpt, prob_thresh=0.0, uncer_thresh=0.1, device=None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
