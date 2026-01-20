@@ -1,12 +1,12 @@
 DATASET:
   # select your dataset (decomment only one of the following lines) 
   #type: EUROC_DATASET  
-  #type: KITTI_DATASET
+  type: KITTI_DATASET
   #type: TUM_DATASET
   #type: ICL_NUIM_DATASET
   #type: REPLICA_DATASET
   #type: TARTANAIR_DATASET
-  type: VIDEO_DATASET
+  # type: VIDEO_DATASET
   #type: SCANNET_DATASET
   #type: ROS1BAG_DATASET
   #type: ROS2BAG_DATASET  
@@ -16,8 +16,8 @@ DATASET:
 
 KITTI_DATASET:
   type: kitti
-  sensor_type: stereo # Here, 'sensor_type' can be 'mono' or 'stereo'
-  base_path: /home/luigi/Work/datasets/rgbd_datasets/kitti_color/dataset
+  sensor_type: mono # Here, 'sensor_type' can be 'mono' or 'stereo'
+  base_path: /home/christoa/Downloads/torrents/data_odometry_gray/dataset
   #
   # name: '06'
   # settings: settings/KITTI04-12.yaml # do not forget to correctly set the corresponding camera settings file 
@@ -25,7 +25,7 @@ KITTI_DATASET:
   name: '00'
   settings: settings/KITTI00-02.yaml # do not forget to correctly set the corresponding camera settings file 
   #
-  is_color: True # do you have the color images for the kitti dataset? (image2 and image3 folders)
+  is_color: False # do you have the color images for the kitti dataset? (image2 and image3 folders)
   groundtruth_file: auto
 
 

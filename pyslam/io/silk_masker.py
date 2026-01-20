@@ -5,6 +5,7 @@ import torch
 import silk.icra25.frame_score as fscore
 from silk.icra25.featureness import SiLKDNNUncertainty  # adjust to what you actually use
 import matplotlib.pyplot as plt
+import os
 
 class SilkMaskGenerator:
     def __init__(self, dnn_ckpt, uh_ckpt, prob_thresh=0.0, uncer_thresh=0.1, device=None):
@@ -37,6 +38,43 @@ class SilkMaskGenerator:
 
         return mask
     
+class MaskLoader:
+    def __init__(self,
+                 mean_location,
+                 var_location,
+                 prob_val,
+                 unc_val,
+                 dummy_image,
+                 device=None) -> None:
+        
+        self.mean_location = mean_location
+        self.var_location = var_location
+        self.prob_val = prob_val
+        self.unc_val = unc_val
+
+        self.H,self.W = dummy_image.shape[:2]
+
+    @torch.no_grad()
+    def __call__(self, mean_path, var_path) -> np.ndarray:
+
+
+        mean = np.load(mean_path)
+        var = np.load(var_path)
+
+        score = fscore.featureness_image(
+            torch.from_numpy(mean),
+            torch.from_numpy(var),
+            prob_thresh=self.prob_val,
+            uncer_thresh=self.unc_val,
+        ).numpy().squeeze()
+
+        mask = (score > 0).astype(np.uint8)
+
+        if mask.shape != (self.H, self.W):
+            mask = cv2.resize(mask, (self.W, self.H), interpolation=cv2.INTER_NEAREST)
+
+        return mask
+
 if __name__ == "__main__":
     # Example usage
     dnn_ckpt = "/home/christoa/Developer/pixer/pixer_v2/silk_data/dnn.ckpt"

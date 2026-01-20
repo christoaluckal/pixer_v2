@@ -38,7 +38,7 @@ from pyslam.slam.visual_odometry_rgbd import (
     VisualOdometryRgbdTensor,
 )
 from pyslam.slam.camera import PinholeCamera
-from pyslam.io.silk_masker import SilkMaskGenerator
+from pyslam.io.silk_masker import SilkMaskGenerator, MaskLoader
 from pyslam.io.ground_truth import groundtruth_factory
 from pyslam.io.dataset_factory import dataset_factory
 from pyslam.io.dataset_types import DatasetType, SensorType
@@ -498,12 +498,27 @@ def run_exp(
                 device="cuda" if torch.cuda.is_available() else "cpu"
             )
 
-            dummy_image = f"{kScriptFolder}/silk_data/frame.png"
-            img_t = cv2.imread(dummy_image)
-            if img_t is None:
-                raise RuntimeError(f"Could not read dummy image at {dummy_image}")
+            # dummy_image = f"{kScriptFolder}/silk_data/frame.png"
+            # img_t = cv2.imread(dummy_image)
+            # if img_t is None:
+            #     raise RuntimeError(f"Could not read dummy image at {dummy_image}")
 
+            # mask = mask_gen(img_t)
+
+            img_t = dataset.getImage(30)
             mask = mask_gen(img_t)
+
+            # SILK LOAD PRECOMPUTED
+            # mask_gen = MaskLoader(
+            #     mean_location=f"{kScriptFolder}/silk_data/mean_maps/",
+            #     var_location=f"{kScriptFolder}/silk_data/var_maps/",
+            #     prob_val=prob_thresh,
+            #     unc_val=uncer_thresh,
+            #     dummy_image=img_t,
+            #     device="cuda" if torch.cuda.is_available() else "cpu"
+            # )
+            # mask = mask_gen("/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/mean/000000_mean.npy","/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/var/000000_var.npy")
+
 
             image_area = img_t.shape[0] * img_t.shape[1]
             non_zero_area = int(np.sum(mask > 0))

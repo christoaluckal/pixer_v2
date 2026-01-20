@@ -34,9 +34,9 @@ from pyslam.utilities.utils_sys import Printer
 from pyslam.utilities.utils_serialization import SerializableEnum, register_class, SerializationJSON
 from pyslam.utilities.utils_string import levenshtein_distance
 from .dataset_types import DatasetType, SensorType, DatasetEnvironmentType, MinimalDatasetConfig
-
+import silk.icra25.frame_score as fscore
 from typing import TYPE_CHECKING
-
+import torch
 if TYPE_CHECKING:
     from pyslam.config import Config  # Only imported when type checking, not at runtime
 
@@ -143,26 +143,26 @@ class Dataset(object):
                 Printer.yellow(f"Dataset end: {self.name}, path: {self.path}, frame id: {frame_id}")
                 self.is_ok = False
             return None, None
-        try:
-            img, mask = self.getImageAndMask(frame_id)
-            
-            if img is None:
-                return None, None
-            if img.ndim == 2:
-                return np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_GRAY2RGB))
-            else:
-                return np.ascontiguousarray(img), mask
-        except:
-            img = None
-            mask = None
-            self.is_ok = False
-            if self.num_frames is not None and frame_id >= self.num_frames:
-                Printer.yellow(f"Dataset end: {self.name}, path: {self.path}, frame id: {frame_id}")
-            else:
-                Printer.red(
-                    f"Cannot open dataset: {self.name}, path: {self.path}, frame id: {frame_id}"
-                )
-            return np.ascontiguousarray(img), mask if img is not None else (None, None)
+        # try:
+        img, mask = self.getImageAndMask(frame_id)
+        
+        if img is None:
+            return None, None
+        if img.ndim == 2:
+            return np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_GRAY2RGB))
+        else:
+            return np.ascontiguousarray(img), mask
+        # except:
+        #     img = None
+        #     mask = None
+        #     self.is_ok = False
+        #     if self.num_frames is not None and frame_id >= self.num_frames:
+        #         Printer.yellow(f"Dataset end: {self.name}, path: {self.path}, frame id: {frame_id}")
+        #     else:
+        #         Printer.red(
+        #             f"Cannot open dataset: {self.name}, path: {self.path}, frame id: {frame_id}"
+        #         )
+        #     return np.ascontiguousarray(img), mask if img is not None else (None, None)
 
 
     # Adjust frame id with start frame id only here
@@ -591,11 +591,15 @@ class KittiDataset(Dataset):
             self.scale_viewer_3d = 1
         self.image_left_path = "/image_0/"
         self.image_right_path = "/image_1/"
+        self.means = "/mean/"
+        self.var = "/var/"
         self.timestamps = np.loadtxt(
             self.path + "/sequences/" + str(self.name) + "/times.txt", dtype=np.float64
         )
         self.max_frame_id = len(self.timestamps)
         self.num_frames = self.max_frame_id
+        self.mean_val = None
+        self.var_val = None
         print("Processing KITTI Sequence of lenght: ", len(self.timestamps))
 
     def set_is_color(self, val):
@@ -631,26 +635,31 @@ class KittiDataset(Dataset):
         img = None
         mask = None
         if frame_id < self.max_frame_id:
-            try:
-                img = cv2.imread(
-                    self.path
-                    + "/sequences/"
-                    + self.name
-                    + self.image_left_path
-                    + str(frame_id).zfill(6)
-                    + ".png"
-                )
-                self._timestamp = self.timestamps[frame_id]
-                
-                # Create a dummy mask (all ones) for demonstration purposes
-                mask = np.ones(img.shape[:2], dtype=np.uint8)
-            except:
-                print("could not retrieve image: ", frame_id, " in path ", self.path)
+            # try:
+            img = cv2.imread(
+                self.path
+                + "/sequences/"
+                + self.name
+                + self.image_left_path
+                + str(frame_id).zfill(6)
+                + ".png"
+            )
+            self._timestamp = self.timestamps[frame_id]
+            
+            if self.mask_generator is not None:
+                mean_path = self.path + "/sequences/" + self.name + self.means + str(frame_id).zfill(6) + "_mean.npy"
+                unc_path = self.path + "/sequences/" + self.name + self.var + str(frame_id).zfill(6) + "_var.npy"
+                # mask = self.mask_generator(mean_path, unc_path)
+                mask = self.mask_generator(img)
+
+            # except:
+            #     print("could not retrieve image: ", frame_id, " in path ", self.path)
             if frame_id + 1 < self.max_frame_id:
                 self._next_timestamp = self.timestamps[frame_id + 1]
             else:
                 self._next_timestamp = self._timestamp + self.Ts
         self.is_ok = img is not None
+        print(f"Image Shape: {img.shape}, Mask Shape: {mask.shape if mask is not None else 'No Mask'} Mask Stats: min {mask.min() if mask is not None else 'N/A'} max {mask.max() if mask is not None else 'N/A'} mean {mask.mean() if mask is not None else 'N/A'}")
         return (np.ascontiguousarray(img) if img is not None else None,
                 mask if mask is not None else None)
 

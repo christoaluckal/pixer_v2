@@ -52,7 +52,8 @@ class OptunaWrapper:
         )
 
         try:
-            rmse_base = self.run_baseline()
+            # rmse_base = self.run_baseline()
+            rmse_base = 0.0
             rmse_masked = run_exp(
                 exp_name=exp_name,
                 feature_type=self.feature_type,
