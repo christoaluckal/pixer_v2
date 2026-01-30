@@ -9,7 +9,7 @@ import os
 
 def load_images_fixed(*paths, as_gray=True):
     images = np.stack([cv2.imread(path, 0) for path in paths])/255.0
-    images = torch.tensor(images, device=DEVICE, dtype=torch.float32)
+    images = torch.tensor(images, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32)
     if not as_gray:
         images = images.permute(0, 3, 1, 2)
         images = images / 255.0
@@ -80,6 +80,45 @@ class MaskLoader:
 
         if mask.shape != (self.H, self.W):
             mask = cv2.resize(mask, (self.W, self.H), interpolation=cv2.INTER_NEAREST)
+
+        return mask
+
+class PngMaskLoader:
+    """
+    Loads precomputed masks saved as:
+        mask_<frame_id>.png
+
+    - Input: frame_id (int)
+    - Output: uint8 binary mask {0,1}
+    - Resizes to (H, W) using nearest neighbor
+    """
+
+    def __init__(self, mask_dir, dummy_image, threshold=127, device=None):
+        self.mask_dir = mask_dir
+        self.H, self.W = dummy_image.shape[:2]
+        self.threshold = int(threshold)
+        self.device = device  # kept for interface compatibility
+
+    @torch.no_grad()
+    def __call__(self, frame_id: int) -> np.ndarray:
+        mask_path = os.path.join(self.mask_dir, f"mask_{frame_id}.png")
+
+        img = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise FileNotFoundError(f"Could not read mask: {mask_path}")
+
+        # (H, W, 3) → (H, W)
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Binarize → {0,1}
+        mask = (img > self.threshold).astype(np.uint8)
+
+        # Match original pipeline behavior
+        if mask.shape != (self.H, self.W):
+            mask = cv2.resize(
+                mask, (self.W, self.H), interpolation=cv2.INTER_NEAREST
+            )
 
         return mask
 

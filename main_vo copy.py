@@ -38,7 +38,7 @@ from pyslam.slam.visual_odometry_rgbd import (
     VisualOdometryRgbdTensor,
 )
 from pyslam.slam.camera import PinholeCamera
-from pyslam.io.silk_masker import SilkMaskGenerator, MaskLoader, PngMaskLoader
+from pyslam.io.silk_masker import SilkMaskGenerator, MaskLoader
 from pyslam.io.ground_truth import groundtruth_factory
 from pyslam.io.dataset_factory import dataset_factory
 from pyslam.io.dataset_types import DatasetType, SensorType
@@ -58,11 +58,6 @@ import torch
 
 import silk.icra25.frame_score as fscore
 from silk.icra25.featureness import load_images
-
-from itertools import product
-import traceback
-import random
-import gc
 
 import pickle
 import sys
@@ -478,7 +473,6 @@ def run_exp(
         pass
 
     wandb_run = None
-    wandb_log_dict = {"log_img": None, "trajectory_xz": None}
     try:
        
     
@@ -495,8 +489,6 @@ def run_exp(
 
         wandb_run = None
 
-
-
         if not is_baseline:
             # mask_gen = SilkMaskGenerator(
             #     dnn_ckpt=f"{kScriptFolder}/silk_data/dnn.ckpt",
@@ -512,6 +504,8 @@ def run_exp(
             # mask = mask_gen(img_t)
 
             
+
+
             # SILK LOAD PRECOMPUTED
             img_t = dataset.getImage(0)
             mask_gen = MaskLoader(
@@ -524,14 +518,6 @@ def run_exp(
             )
             mask = mask_gen("/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/mean/000000_mean.npy","/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/var/000000_var.npy")
 
-            # SIVO LOADER
-            # img_t = dataset.getImage(0)
-            # mask_gen = PngMaskLoader(
-            #     mask_dir="/home/hexwife/christo/data_odometry_gray/dataset/sequences/00/sivo_masks",
-            #     dummy_image=img_t,   
-            #     threshold=127 
-            # )
-            # mask = mask_gen(0)
 
             image_area = img_t.shape[0] * img_t.shape[1]
             non_zero_area = int(np.sum(mask > 0))
@@ -558,31 +544,31 @@ def run_exp(
             # Dummy passed: apply mask generator
             dataset.set_mask_generator(mask_gen)
 
+            # ✅ ONLY NOW start W&B (and only in optuna mode)
             if optuna_mode:
-                # wandb_run = wandb.init(
-                #     project="pixerv2_vo_optuna",
-                #     entity="droneslab",
-                #     name=exp_name,
-                #     group="optuna",
-                #     job_type="trial",
-                #     reinit=True,
-                #     config={
-                #         "feature_name": feature_name,
-                #         "feature_num": feature_num,
-                #         "prob_thresh": prob_thresh,
-                #         "uncer_thresh": uncer_thresh,
-                #         "is_baseline": is_baseline,
-                #     },
-                # )
+                wandb_run = wandb.init(
+                    project="pixerv2_vo_optuna",
+                    entity="droneslab",
+                    name=exp_name,
+                    group="optuna",
+                    job_type="trial",
+                    reinit=True,
+                    config={
+                        "feature_name": feature_name,
+                        "feature_num": feature_num,
+                        "prob_thresh": prob_thresh,
+                        "uncer_thresh": uncer_thresh,
+                        "is_baseline": is_baseline,
+                    },
+                )
 
                 log_img = make_1x3_grid(img_t, mask)
-                # wandb.log({
-                #     "qual/dummy_grid": wandb.Image(
-                #         log_img,
-                #         caption=f"Dummy mask p={prob_thresh:.3f}, u={uncer_thresh:.3f}, frac={frac:.3%}"
-                #     )
-                # })
-                wandb_log_dict['log_img'] = log_img
+                wandb.log({
+                    "qual/dummy_grid": wandb.Image(
+                        log_img,
+                        caption=f"Dummy mask p={prob_thresh:.3f}, u={uncer_thresh:.3f}, frac={frac:.3%}"
+                    )
+                })
 
         else:
             # baseline: no mask_gen
@@ -894,24 +880,18 @@ def run_exp(
         #     "avg_est_time_per_frame": est_time,
         #     "total_loop_time": loop_time,
         # })
-        if optuna_mode:
-            # wandb.log({'base_rmse': base_rmse})
-            # wandb.log({
-            #     "avg_original_kps": np.mean(original_kps)})
-            # wandb.log({
-            #     "avg_masked_kps": np.mean(masked_kps)})
-            # wandb.log({
-            #     "kp_reduction_%": np.mean(kp_reduction)})
-            # wandb.log({
-            #     "avg_est_time_per_frame": np.mean(est_time)})
-            # wandb.log({
-            #     "total_loop_time": loop_time})
-            wandb_log_dict['base_rmse'] = base_rmse
-            wandb_log_dict['avg_original_kps'] = np.mean(original_kps)
-            wandb_log_dict['avg_masked_kps'] = np.mean(masked_kps)
-            wandb_log_dict['kp_reduction_%'] = np.mean(kp_reduction)
-            wandb_log_dict['avg_est_time_per_frame'] = np.mean(est_time)
-            wandb_log_dict['total_loop_time'] = loop_time
+        if optuna_mode and wandb_run is not None:
+            wandb.log({'base_rmse': base_rmse})
+            wandb.log({
+                "avg_original_kps": np.mean(original_kps)})
+            wandb.log({
+                "avg_masked_kps": np.mean(masked_kps)})
+            wandb.log({
+                "kp_reduction_%": np.mean(kp_reduction)})
+            wandb.log({
+                "avg_est_time_per_frame": np.mean(est_time)})
+            wandb.log({
+                "total_loop_time": loop_time})
 
         # process_data(results, images=images, masks=images, draw_tracks=plot_tracks, plot_traj=plot_traj, traj_skips=20)
         run_folder = os.path.join(kResultsFolder, exp_name)
@@ -927,8 +907,7 @@ def run_exp(
         rmse = evo_ape_rmse_kitti(est_path, gt_path, monocular=True)
 
         if optuna_mode:
-            # wandb.log({"rmse_diff": base_rmse - rmse})
-            wandb_log_dict['rmse_diff'] = base_rmse - rmse
+            wandb.log({"rmse_diff": base_rmse - rmse})
 
         # If NOT in optuna mode, keep your existing processing/reporting
         if not optuna_mode:
@@ -942,13 +921,13 @@ def run_exp(
                 plot_traj=plot_traj,
                 traj_skips=20,
             )
+        if optuna_mode:
+            wandb.log({"evo_ape_rmse": rmse})
 
-        wandb_log_dict['evo_ape_rmse'] = rmse
-        fig = make_xz_traj_figure(results["evo_cands"], results["evo_gts"], title=exp_name)
-        wandb_log_dict['trajectory_xz'] = wandb.Image(fig)
-        # fig.savefig("trajectory_xz.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
-
+        if wandb_run is not None:
+            fig = make_xz_traj_figure(results["evo_cands"], results["evo_gts"], title=exp_name)
+            wandb.log({"trajectory_xz": wandb.Image(fig)})
+            plt.close(fig)
     except Exception as e:
         Printer.red(f"[Error] Experiment {exp_name} failed with error: {e}")
         traceback.print_exc()
@@ -957,7 +936,7 @@ def run_exp(
         if wandb_run is not None:
             wandb_run.finish()
 
-    return rmse, wandb_log_dict
+    return rmse
 
     
 
@@ -969,101 +948,95 @@ if __name__ == "__main__":
 
     FEATURE_TRACKER_PRESETS = [
         ("LK_SHI_TOMASI", FeatureTrackerConfigs.LK_SHI_TOMASI),
-        # ("LK_FAST", FeatureTrackerConfigs.LK_FAST),
-        # ("ORB", FeatureTrackerConfigs.ORB),
-        # ("SIFT", FeatureTrackerConfigs.SIFT),
-        # ("AKAZE", FeatureTrackerConfigs.AKAZE),
-        # ("SHI_TOMASI_ORB", FeatureTrackerConfigs.SHI_TOMASI_ORB),
-        # ("SHI_TOMASI_FREAK", FeatureTrackerConfigs.SHI_TOMASI_FREAK),
-        # ("FAST_ORB", FeatureTrackerConfigs.FAST_ORB),
-        # ("FAST_FREAK", FeatureTrackerConfigs.FAST_FREAK),
-        # ("ORB2", FeatureTrackerConfigs.ORB2),
-        # ("BRISK", FeatureTrackerConfigs.BRISK),
-        # ("BRISK_TFEAT", FeatureTrackerConfigs.BRISK_TFEAT),
-        # # ("KAZE", FeatureTrackerConfigs.KAZE), Dont use
-        # ("ROOT_SIFT", FeatureTrackerConfigs.ROOT_SIFT),
-        # ("SUPERPOINT", FeatureTrackerConfigs.SUPERPOINT),
-        # # ("XFEAT", FeatureTrackerConfigs.XFEAT), Dont use
-        # # ("XFEAT_XFEAT", FeatureTrackerConfigs.XFEAT_XFEAT), Dont use
-        # # ("XFEAT_LIGHTGLUE", FeatureTrackerConfigs.XFEAT_LIGHTGLUE), Dont use
-        # ("LIGHTGLUE", FeatureTrackerConfigs.LIGHTGLUE),
-        # # ("LIGHTGLUE_DISK", FeatureTrackerConfigs.LIGHTGLUE_DISK), Dont use
-        # ("LIGHTGLUE_ALIKED", FeatureTrackerConfigs.LIGHTGLUE_ALIKED),
-        # # ("LIGHTGLUESIFT", FeatureTrackerConfigs.LIGHTGLUESIFT),Dont use
-        # # ("DELF", FeatureTrackerConfigs.DELF), Dont use
-        # # ("D2NET", FeatureTrackerConfigs.D2NET), Error
-        # # ("R2D2", FeatureTrackerConfigs.R2D2), Error
-        # # ("LFNET", FeatureTrackerConfigs.LFNET), Dont use
-        # # ("CONTEXTDESC", FeatureTrackerConfigs.CONTEXTDESC), Dont use
-        # # ("KEYNET", FeatureTrackerConfigs.KEYNET), Dont use
-        # # ("DISK", FeatureTrackerConfigs.DISK), Dont use
-        # ("ALIKED", FeatureTrackerConfigs.ALIKED),
-        # # ("KEYNETAFFNETHARDNET", FeatureTrackerConfigs.KEYNETAFFNETHARDNET), Dont use
-        # ("ORB2_FREAK", FeatureTrackerConfigs.ORB2_FREAK),
-        # ("ORB2_BEBLID", FeatureTrackerConfigs.ORB2_BEBLID),
-        # ("ORB2_HARDNET", FeatureTrackerConfigs.ORB2_HARDNET),
-        # ("ORB2_SOSNET", FeatureTrackerConfigs.ORB2_SOSNET),
-        # ("ORB2_L2NET", FeatureTrackerConfigs.ORB2_L2NET),
+        ("LK_FAST", FeatureTrackerConfigs.LK_FAST),
+        ("ORB", FeatureTrackerConfigs.ORB),
+        ("SIFT", FeatureTrackerConfigs.SIFT),
+        ("AKAZE", FeatureTrackerConfigs.AKAZE),
+        ("SHI_TOMASI_ORB", FeatureTrackerConfigs.SHI_TOMASI_ORB),
+        ("SHI_TOMASI_FREAK", FeatureTrackerConfigs.SHI_TOMASI_FREAK),
+        ("FAST_ORB", FeatureTrackerConfigs.FAST_ORB),
+        ("FAST_FREAK", FeatureTrackerConfigs.FAST_FREAK),
+        ("ORB2", FeatureTrackerConfigs.ORB2),
+        ("BRISK", FeatureTrackerConfigs.BRISK),
+        ("BRISK_TFEAT", FeatureTrackerConfigs.BRISK_TFEAT),
+        # ("KAZE", FeatureTrackerConfigs.KAZE), Dont use
+        ("ROOT_SIFT", FeatureTrackerConfigs.ROOT_SIFT),
+        ("SUPERPOINT", FeatureTrackerConfigs.SUPERPOINT),
+        # ("XFEAT", FeatureTrackerConfigs.XFEAT), Dont use
+        # ("XFEAT_XFEAT", FeatureTrackerConfigs.XFEAT_XFEAT), Dont use
+        # ("XFEAT_LIGHTGLUE", FeatureTrackerConfigs.XFEAT_LIGHTGLUE), Dont use
+        ("LIGHTGLUE", FeatureTrackerConfigs.LIGHTGLUE),
+        # ("LIGHTGLUE_DISK", FeatureTrackerConfigs.LIGHTGLUE_DISK), Dont use
+        ("LIGHTGLUE_ALIKED", FeatureTrackerConfigs.LIGHTGLUE_ALIKED),
+        # ("LIGHTGLUESIFT", FeatureTrackerConfigs.LIGHTGLUESIFT),Dont use
+        # ("DELF", FeatureTrackerConfigs.DELF), Dont use
+        # ("D2NET", FeatureTrackerConfigs.D2NET), Error
+        # ("R2D2", FeatureTrackerConfigs.R2D2), Error
+        # ("LFNET", FeatureTrackerConfigs.LFNET), Dont use
+        # ("CONTEXTDESC", FeatureTrackerConfigs.CONTEXTDESC), Dont use
+        # ("KEYNET", FeatureTrackerConfigs.KEYNET), Dont use
+        # ("DISK", FeatureTrackerConfigs.DISK), Dont use
+        ("ALIKED", FeatureTrackerConfigs.ALIKED),
+        # ("KEYNETAFFNETHARDNET", FeatureTrackerConfigs.KEYNETAFFNETHARDNET), Dont use
+        ("ORB2_FREAK", FeatureTrackerConfigs.ORB2_FREAK),
+        ("ORB2_BEBLID", FeatureTrackerConfigs.ORB2_BEBLID),
+        ("ORB2_HARDNET", FeatureTrackerConfigs.ORB2_HARDNET),
+        ("ORB2_SOSNET", FeatureTrackerConfigs.ORB2_SOSNET),
+        ("ORB2_L2NET", FeatureTrackerConfigs.ORB2_L2NET),
 
     ]
 
-    max_features = [
-        # 100,
-        # 400,
-        # 500, 
-        # 1000, 
-        2000
-        ]
+    max_features = [100,400,500, 1000, 2000]
     base_lines = [False]
 
-    # probs = np.arange(0.0,1.01,0.1)
-    # uncers = np.arange(0.0,1.01,0.1)
+    probs = np.arange(0.0,1.01,0.1)
+    uncers = np.arange(0.0,1.01,0.1)
 
-    probs = [0.0]
-    uncers = [0.2]
-
-
+    from itertools import product
+    import traceback
     experiments = list(product(FEATURE_TRACKER_PRESETS, max_features, base_lines, probs, uncers))
     baselines = list(product(FEATURE_TRACKER_PRESETS, max_features, [True], [0.0], [0.0]))
 
-    # experiments = baselines + experiments
+    experiments = baselines + experiments
 
+    import random
+    import gc
     random.shuffle(experiments)
 
     # for (feature_name, feature_type), max_f, is_baseline in experiments:
     for (feature_name, feature_type), max_f, is_baseline, prob_thresh, uncer_thresh in experiments:
-        exp_name = f'sivo_{"baseline" if is_baseline else "masked"}_${max_f}$_#{feature_name}#_*{prob_thresh:.2f}*_<{uncer_thresh:.2f}>'
-        # try:
-        run_exp(
-            exp_name=exp_name,
-            feature_type=feature_type,
-            feature_name=feature_name,
-            is_baseline=is_baseline,
-            feature_num=max_f,
-            max_images=max_images,
-            save_intermediate=False,
-            plot_tracks=False,
-            plot_traj=True,
-            prob_thresh=prob_thresh,
-            uncer_thresh=uncer_thresh,
-        )
+        exp_name = f'{"baseline" if is_baseline else "masked"}_${max_f}$_#{feature_name}#_*{prob_thresh:.2f}*_<{uncer_thresh:.2f}>'
+        try:
+            run_exp(
+                exp_name=exp_name,
+                feature_type=feature_type,
+                feature_name=feature_name,
+                is_baseline=is_baseline,
+                feature_num=max_f,
+                max_images=max_images,
+                save_intermediate=False,
+                plot_tracks=False,
+                plot_traj=True,
+                prob_thresh=prob_thresh,
+                uncer_thresh=uncer_thresh,
+            )
 
-        # garbage collection and torch cache clearing
-        
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            # garbage collection and torch cache clearing
+            
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-        # except Exception as e:
-        #     print(f"Experiment {exp_name} failed with exception: {e}")
-        #     tb = traceback.format_exc()
-        #     with open(f'{kResultsFolder}/{exp_name}_error.txt', 'w') as f:
-        #         f.write(tb)
+        except Exception as e:
+            print(f"Experiment {exp_name} failed with exception: {e}")
+            tb = traceback.format_exc()
+            with open(f'{kResultsFolder}/{exp_name}_error.txt', 'w') as f:
+                f.write(tb)
 
-        #     gc.collect()
-        #     if torch.cuda.is_available():
-        #         torch.cuda.empty_cache()
-        #     continue
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            continue
 
     # run_exp(
     #     exp_name="masked",
