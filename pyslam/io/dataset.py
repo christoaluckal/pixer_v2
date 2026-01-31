@@ -647,11 +647,20 @@ class KittiDataset(Dataset):
             self._timestamp = self.timestamps[frame_id]
             
             if self.mask_generator is not None:
-                mean_path = self.path + "/sequences/" + self.name + self.means + str(frame_id).zfill(6) + "_mean.npy"
-                unc_path = self.path + "/sequences/" + self.name + self.var + str(frame_id).zfill(6) + "_var.npy"
+                
                 # mask = self.mask_generator(img)
-                mask = self.mask_generator(mean_path, unc_path)
+                # mask = self.mask_generator(mean_path, unc_path)
                 # mask = self.mask_generator(frame_id)
+                try:
+                    mask = self.mask_generator(frame_id)
+                    print(f"@@@@@@@ USED SIVO")
+                except TypeError:
+                    # fallback for old signature (mean_path, unc_path)
+                    mean_path = self.path + "/sequences/" + self.name + self.means + str(frame_id).zfill(6) + "_mean.npy"
+                    unc_path = self.path + "/sequences/" + self.name + self.var + str(frame_id).zfill(6) + "_var.npy"
+                    mask = self.mask_generator(mean_path, unc_path)
+                    print(f"@@@@@@@ USED PIXER")
+
 
             # except:
             #     print("could not retrieve image: ", frame_id, " in path ", self.path)

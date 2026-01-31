@@ -183,6 +183,65 @@ def make_xz_traj_figure(evo_cands, evo_gts, title=None):
 
     return fig
 
+def run_evo(cmd, cwd=None):
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+    subprocess.run(cmd, check=True, cwd=cwd, env=env)
+
+def generate_evo_report(evo_cand, evo_gt, out_dir="evo_report", monocular=False, rpe_delta=1, orientation="xz"):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    est = evo_cand
+    gt = evo_gt
+    
+    # common flags
+    align = ["-a"]
+    if monocular:
+        align += ["--correct_scale"]
+
+    # APE
+    run_evo([
+        "evo_ape", "kitti", str(gt), str(est),
+        *align,
+        "--save_results", str(out_dir / "ape.zip"),
+        "--save_plot", str(out_dir / "ape.png"),
+    ])
+
+    # RPE (per-frame by default; can change delta)
+    run_evo([
+        "evo_rpe", "kitti", str(gt), str(est),
+        *align,
+        "--delta", str(rpe_delta),
+        "--save_results", str(out_dir / "rpe.zip"),
+        "--save_plot", str(out_dir / "rpe.png"),
+    ])
+
+    # Trajectory overlay (saved only)
+    run_evo([
+        "evo_traj", "kitti", str(gt), str(est),
+        "--plot_mode", orientation,
+        "--save_plot", str(out_dir / f"traj_{orientation}.png"),
+    ])
+
+    # Also save stdout tables (nice for quick diff/grep)
+    (out_dir / "ape.txt").write_text(
+        subprocess.check_output(
+            ["evo_ape", "kitti", str(gt), str(est), *align],
+            env={**os.environ, "MPLBACKEND": "Agg"},
+            text=True
+        )
+    )
+    (out_dir / "rpe.txt").write_text(
+        subprocess.check_output(
+            ["evo_rpe", "kitti", str(gt), str(est), *align,
+             "--delta", str(rpe_delta)],
+            env={**os.environ, "MPLBACKEND": "Agg"},
+            text=True
+        )
+    )
+
+    return out_dir
 
 def factory_plot2d(*args, **kwargs):
     if kVisualize:
@@ -463,6 +522,8 @@ def run_exp(
         uncer_thresh: float = 0.1,
         optuna_mode: bool = False,
         base_rmse: float = None,
+        mask_source: str = "ours",
+        run_process_data: bool = False,
         ):
     
     if os.environ.get('PYSLAM_CONFIG') is None:
@@ -497,94 +558,88 @@ def run_exp(
 
 
 
-        if not is_baseline:
-            # mask_gen = SilkMaskGenerator(
-            #     dnn_ckpt=f"{kScriptFolder}/silk_data/dnn.ckpt",
-            #     uh_ckpt=f"{kScriptFolder}/silk_data/uh_mc100.ckpt",
-            #     prob_thresh=prob_thresh,
-            #     uncer_thresh=uncer_thresh,
-            #     device="cuda" if torch.cuda.is_available() else "cpu"
-            # )
-            # dummy_image = f"{kScriptFolder}/silk_data/frame.png"
-            # img_t = cv2.imread(dummy_image)
-            # if img_t is None:
-            #     raise RuntimeError(f"Could not read dummy image at {dummy_image}")
-            # mask = mask_gen(img_t)
-
-            
-            # SILK LOAD PRECOMPUTED
+        if mask_source != "none":
             img_t = dataset.getImage(0)
-            mask_gen = MaskLoader(
-                mean_location=f"{kScriptFolder}/silk_data/mean_maps/",
-                var_location=f"{kScriptFolder}/silk_data/var_maps/",
-                prob_val=prob_thresh,
-                unc_val=uncer_thresh,
-                dummy_image=img_t,
-                device="cuda" if torch.cuda.is_available() else "cpu"
-            )
-            mask = mask_gen("/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/mean/000000_mean.npy","/home/christoa/Downloads/torrents/data_odometry_gray/dataset/sequences/00/var/000000_var.npy")
+            if mask_source == "silk_raw":
+                mask_gen = SilkMaskGenerator(
+                    dnn_ckpt=f"{kScriptFolder}/silk_data/dnn.ckpt",
+                    uh_ckpt=f"{kScriptFolder}/silk_data/uh_mc100.ckpt",
+                    prob_thresh=prob_thresh,
+                    uncer_thresh=uncer_thresh,
+                    device="cuda" if torch.cuda.is_available() else "cpu"
+                )
+                dummy_image = f"{kScriptFolder}/silk_data/frame.png"
+                img_t = cv2.imread(dummy_image)
+                if img_t is None:
+                    raise RuntimeError(f"Could not read dummy image at {dummy_image}")
+                mask = mask_gen(img_t)
+
+            elif mask_source == "ours":
+                # SILK LOAD PRECOMPUTED
+                img_t = dataset.getImage(0)
+                mask_gen = MaskLoader(
+                    mean_location=f"{kScriptFolder}/silk_data/mean_maps/",
+                    var_location=f"{kScriptFolder}/silk_data/var_maps/",
+                    prob_val=prob_thresh,
+                    unc_val=uncer_thresh,
+                    dummy_image=img_t,
+                    device="cuda" if torch.cuda.is_available() else "cpu"
+                )
+                mask = mask_gen("/home/hexwife/christo/data_odometry_gray/dataset/sequences/00/mean/000000_mean.npy","/home/hexwife/christo/data_odometry_gray/dataset/sequences/00/var/000000_var.npy")
+
+                image_area = img_t.shape[0] * img_t.shape[1]
+                non_zero_area = int(np.sum(mask > 0))
+                frac = non_zero_area / float(image_area)
+
+                if frac < 0.01:
+                    dummy_ok = False
+                    dummy_reason = f"too_few_features frac={frac:.6f}"
+                    Printer.yellow(
+                        f"[Dummy FAIL] too few features ({non_zero_area}/{image_area}={frac*100:.4f}%) "
+                        f"p={prob_thresh}, u={uncer_thresh}"
+                    )
+                    raise ValueError("Dummy mask test failed: too few features.")
+                elif frac > 0.90:
+                    dummy_ok = False
+                    dummy_reason = f"too_many_features frac={frac:.6f}"
+                    Printer.yellow(
+                        f"[Dummy FAIL] too many features ({non_zero_area}/{image_area}={frac*100:.2f}%) "
+                        f"p={prob_thresh}, u={uncer_thresh}"
+                    )
+                    # If you want to *allow* this case, delete the next line.
+                    raise ValueError("Dummy mask test failed: mask too dense.")
 
             # SIVO LOADER
-            # img_t = dataset.getImage(0)
-            # mask_gen = PngMaskLoader(
-            #     mask_dir="/home/hexwife/christo/data_odometry_gray/dataset/sequences/00/sivo_masks",
-            #     dummy_image=img_t,   
-            #     threshold=127 
-            # )
-            # mask = mask_gen(0)
-
-            image_area = img_t.shape[0] * img_t.shape[1]
-            non_zero_area = int(np.sum(mask > 0))
-            frac = non_zero_area / float(image_area)
-
-            if frac < 0.01:
-                dummy_ok = False
-                dummy_reason = f"too_few_features frac={frac:.6f}"
-                Printer.yellow(
-                    f"[Dummy FAIL] too few features ({non_zero_area}/{image_area}={frac*100:.4f}%) "
-                    f"p={prob_thresh}, u={uncer_thresh}"
+            elif mask_source == "sota_png":
+                img_t = dataset.getImage(0)
+                mask_gen = PngMaskLoader(
+                    mask_dir="/home/hexwife/christo/data_odometry_gray/dataset/sequences/00/sivo_masks",
+                    dummy_image=img_t,   
+                    threshold=127 
                 )
-                raise ValueError("Dummy mask test failed: too few features.")
-            elif frac > 0.90:
-                dummy_ok = False
-                dummy_reason = f"too_many_features frac={frac:.6f}"
-                Printer.yellow(
-                    f"[Dummy FAIL] too many features ({non_zero_area}/{image_area}={frac*100:.2f}%) "
-                    f"p={prob_thresh}, u={uncer_thresh}"
-                )
-                # If you want to *allow* this case, delete the next line.
-                raise ValueError("Dummy mask test failed: mask too dense.")
+                mask = mask_gen(0)
+
+            
 
             # Dummy passed: apply mask generator
             dataset.set_mask_generator(mask_gen)
 
             if optuna_mode:
-                # wandb_run = wandb.init(
-                #     project="pixerv2_vo_optuna",
-                #     entity="droneslab",
-                #     name=exp_name,
-                #     group="optuna",
-                #     job_type="trial",
-                #     reinit=True,
-                #     config={
-                #         "feature_name": feature_name,
-                #         "feature_num": feature_num,
-                #         "prob_thresh": prob_thresh,
-                #         "uncer_thresh": uncer_thresh,
-                #         "is_baseline": is_baseline,
-                #     },
-                # )
-
                 log_img = make_1x3_grid(img_t, mask)
-                # wandb.log({
-                #     "qual/dummy_grid": wandb.Image(
-                #         log_img,
-                #         caption=f"Dummy mask p={prob_thresh:.3f}, u={uncer_thresh:.3f}, frac={frac:.3%}"
-                #     )
-                # })
                 wandb_log_dict['log_img'] = log_img
+                if run_process_data:
+                    run_folder = os.path.join(kResultsFolder, exp_name)
+                    os.makedirs(run_folder, exist_ok=True)
+                    log_img = make_1x3_grid(img_t, mask)
+                    cv2.imwrite(f'{run_folder}/{exp_name}_grid.png',log_img)
+            else:
+                run_folder = os.path.join(kResultsFolder, exp_name)
+                os.makedirs(run_folder, exist_ok=True)
+                log_img = make_1x3_grid(img_t, mask)
+                cv2.imwrite(f'{run_folder}/{exp_name}_grid.png',log_img)
 
         else:
+            dataset.set_mask_generator(None)
             # baseline: no mask_gen
             pass
 
@@ -887,25 +942,7 @@ def run_exp(
         est_time = np.around(results['est_times'], decimals=4)
         loop_time = np.around(results['total_loop_time'], decimals=2)
 
-        # wandb.log({
-        #     "avg_original_kps": original_kps,
-        #     "avg_masked_kps": masked_kps,
-        #     "kp_reduction_%": kp_reduction,
-        #     "avg_est_time_per_frame": est_time,
-        #     "total_loop_time": loop_time,
-        # })
         if optuna_mode:
-            # wandb.log({'base_rmse': base_rmse})
-            # wandb.log({
-            #     "avg_original_kps": np.mean(original_kps)})
-            # wandb.log({
-            #     "avg_masked_kps": np.mean(masked_kps)})
-            # wandb.log({
-            #     "kp_reduction_%": np.mean(kp_reduction)})
-            # wandb.log({
-            #     "avg_est_time_per_frame": np.mean(est_time)})
-            # wandb.log({
-            #     "total_loop_time": loop_time})
             wandb_log_dict['base_rmse'] = base_rmse
             wandb_log_dict['avg_original_kps'] = np.mean(original_kps)
             wandb_log_dict['avg_masked_kps'] = np.mean(masked_kps)
@@ -927,11 +964,10 @@ def run_exp(
         rmse = evo_ape_rmse_kitti(est_path, gt_path, monocular=True)
 
         if optuna_mode:
-            # wandb.log({"rmse_diff": base_rmse - rmse})
             wandb_log_dict['rmse_diff'] = base_rmse - rmse
 
         # If NOT in optuna mode, keep your existing processing/reporting
-        if not optuna_mode:
+        if run_process_data:
             process_data(
                 results,
                 images=images,
@@ -1020,7 +1056,7 @@ if __name__ == "__main__":
     # uncers = np.arange(0.0,1.01,0.1)
 
     probs = [0.0]
-    uncers = [0.2]
+    uncers = [0.4]
 
 
     experiments = list(product(FEATURE_TRACKER_PRESETS, max_features, base_lines, probs, uncers))
@@ -1046,6 +1082,7 @@ if __name__ == "__main__":
             plot_traj=True,
             prob_thresh=prob_thresh,
             uncer_thresh=uncer_thresh,
+            mask_source="sota_png",
         )
 
         # garbage collection and torch cache clearing
